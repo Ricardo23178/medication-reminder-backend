@@ -12,4 +12,5 @@ public class MedicationBackendApplication {
         SpringApplication.run(MedicationBackendApplication.class, args);
     }
 
+
 }
