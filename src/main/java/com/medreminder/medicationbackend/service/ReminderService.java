@@ -2,13 +2,17 @@ package com.medreminder.medicationbackend.service;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
 import com.medreminder.medicationbackend.dto.ConfirmRequest;
+import com.medreminder.medicationbackend.entity.AbnormalEvent;
 import com.medreminder.medicationbackend.entity.MedicationPlan;
 import com.medreminder.medicationbackend.entity.MedicationRecord;
 import com.medreminder.medicationbackend.entity.Medicine;
+import com.medreminder.medicationbackend.entity.Notification;
 import com.medreminder.medicationbackend.entity.PlanTime;
 import com.medreminder.medicationbackend.entity.RemindTask;
+import com.medreminder.medicationbackend.mapper.AbnormalEventMapper;
 import com.medreminder.medicationbackend.mapper.MedicationRecordMapper;
 import com.medreminder.medicationbackend.mapper.MedicineMapper;
+import com.medreminder.medicationbackend.mapper.NotificationMapper;
 import com.medreminder.medicationbackend.mapper.PlanMapper;
 import com.medreminder.medicationbackend.mapper.PlanTimeMapper;
 import com.medreminder.medicationbackend.mapper.RemindTaskMapper;
@@ -50,17 +54,23 @@ public class ReminderService {
     private final PlanMapper planMapper;
     private final PlanTimeMapper planTimeMapper;
     private final MedicineMapper medicineMapper;
+    private final AbnormalEventMapper abnormalEventMapper;
+    private final NotificationMapper notificationMapper;
 
     public ReminderService(RemindTaskMapper remindTaskMapper,
                            MedicationRecordMapper recordMapper,
                            PlanMapper planMapper,
                            PlanTimeMapper planTimeMapper,
-                           MedicineMapper medicineMapper) {
+                           MedicineMapper medicineMapper,
+                           AbnormalEventMapper abnormalEventMapper,
+                           NotificationMapper notificationMapper) {
         this.remindTaskMapper = remindTaskMapper;
         this.recordMapper = recordMapper;
         this.planMapper = planMapper;
         this.planTimeMapper = planTimeMapper;
         this.medicineMapper = medicineMapper;
+        this.abnormalEventMapper = abnormalEventMapper;
+        this.notificationMapper = notificationMapper;
     }
 
     /**
@@ -153,6 +163,75 @@ public class ReminderService {
         return task == null ? null : toVO(task);
     }
 
+    /**
+     * 为所有「执行中」计划生成当天提醒任务（定时器 + 手动触发共用）。
+     * 这是服药闭环的「自动转起来」入口：不依赖患者打开 App，
+     * 由后台定时扫描所有 ACTIVE 计划，提前把当天每一剂的任务实例生成好。
+     * 幂等靠 uk_plantime_scheduled 唯一键，重复调用不产生脏数据。
+     */
+    public void generateTodayTasksForAll() {
+        // 查全库所有 ACTIVE 计划（不分用户）
+        List<MedicationPlan> plans = planMapper.selectList(
+                new LambdaQueryWrapper<MedicationPlan>()
+                        .eq(MedicationPlan::getStatus, "ACTIVE"));
+
+        for (MedicationPlan plan : plans) {
+            ensureTodayTasksForPlan(plan);
+        }
+    }
+
+    /**
+     * 扫描所有「已超容忍窗口、但还没确认」的任务，判定为超时未确认：
+     * 1. 任务状态 WAITING/TRIGGERED → 置为 EXPIRED；
+     * 2. 生成一条 abnormal_event（type=UNCONFIRMED_TIMEOUT），供家属在协同模块查看；
+     * 3. 给患者生成一条通知记录（FAMILY_ALERT 类告警的落点）。
+     *
+     * 幂等靠 uk_task_type 唯一键 —— 同一任务同一类异常只建一条，重复扫描无副作用。
+     * 口径（导师红线）：只判「窗口内是否完成确认」，不宣称医学意义上的真实漏服，
+     * 所以事件类型用 UNCONFIRMED（未确认），不是 MISSED（漏服）。
+     */
+    public void scanExpiredTasks() {
+        LocalDateTime now = LocalDateTime.now();
+
+        // 找出「到期时间已过、但仍处于未确认状态」的任务
+        List<RemindTask> expired = remindTaskMapper.selectList(
+                new LambdaQueryWrapper<RemindTask>()
+                        .lt(RemindTask::getExpireAt, now)
+                        .in(RemindTask::getStatus, "WAITING", "TRIGGERED"));
+
+        for (RemindTask task : expired) {
+            // 1) 任务状态 → EXPIRED
+            task.setStatus("EXPIRED");
+            remindTaskMapper.updateById(task);
+
+            // 2) 生成异常事件（唯一键 uk_task_type 兜底，已存在则跳过）
+            AbnormalEvent event = new AbnormalEvent();
+            event.setUserId(task.getUserId());
+            event.setTaskId(task.getId());
+            event.setType("UNCONFIRMED_TIMEOUT");
+            event.setStatus("OPEN");
+            event.setOccurredAt(task.getExpireAt());
+            try {
+                abnormalEventMapper.insert(event);
+            } catch (DuplicateKeyException e) {
+                // 已存在同类异常，跳过
+            }
+
+            // 3) 给患者生成一条告警通知记录（家属协同的「通知」落点）
+            Notification notif = new Notification();
+            notif.setReceiverId(task.getUserId());
+            notif.setType("FAMILY_ALERT");
+            notif.setTitle("用药未确认提醒");
+            notif.setContent("您有用药提醒超时未确认，系统已记录异常。");
+            notif.setBizType("ABNORMAL_EVENT");
+            notif.setReadFlag(0);
+            notif.setSendStatus("PENDING");
+            notif.setRetryCount(0);
+            notif.setCreateTime(now);
+            notificationMapper.insert(notif);
+        }
+    }
+
     // ==================== 内部方法 ====================
 
     /**
@@ -162,34 +241,38 @@ public class ReminderService {
      * 幂等：uk_plantime_scheduled 唯一键，重复生成命中冲突即忽略。
      */
     private void ensureTodayTasks(Long userId) {
-        LocalDate today = LocalDate.now();
-
-        // 查当前用户所有「执行中」的计划
         List<MedicationPlan> plans = planMapper.selectList(
                 new LambdaQueryWrapper<MedicationPlan>()
                         .eq(MedicationPlan::getUserId, userId)
                         .eq(MedicationPlan::getStatus, "ACTIVE"));
 
         for (MedicationPlan plan : plans) {
-            // 起止日期过滤：今天不在计划范围内则跳过
-            if (plan.getStartDate() != null && today.isBefore(plan.getStartDate())) {
-                continue;
-            }
-            if (plan.getEndDate() != null && today.isAfter(plan.getEndDate())) {
-                continue;
-            }
+            ensureTodayTasksForPlan(plan);
+        }
+    }
 
-            // 查该计划的启用时间点
-            List<PlanTime> times = planTimeMapper.selectList(
-                    new LambdaQueryWrapper<PlanTime>()
-                            .eq(PlanTime::getPlanId, plan.getId())
-                            .eq(PlanTime::getEnabled, 1)
-                            .orderByAsc(PlanTime::getSequenceNo));
+    /** 为单个计划生成当天任务（起止日期过滤 + 逐个时间点生成，幂等） */
+    private void ensureTodayTasksForPlan(MedicationPlan plan) {
+        LocalDate today = LocalDate.now();
 
-            for (PlanTime pt : times) {
-                LocalDateTime scheduledAt = LocalDateTime.of(today, pt.getRemindTime());
-                generateTaskIfAbsent(plan, pt, scheduledAt);
-            }
+        // 起止日期过滤：今天不在计划范围内则跳过
+        if (plan.getStartDate() != null && today.isBefore(plan.getStartDate())) {
+            return;
+        }
+        if (plan.getEndDate() != null && today.isAfter(plan.getEndDate())) {
+            return;
+        }
+
+        // 查该计划的启用时间点
+        List<PlanTime> times = planTimeMapper.selectList(
+                new LambdaQueryWrapper<PlanTime>()
+                        .eq(PlanTime::getPlanId, plan.getId())
+                        .eq(PlanTime::getEnabled, 1)
+                        .orderByAsc(PlanTime::getSequenceNo));
+
+        for (PlanTime pt : times) {
+            LocalDateTime scheduledAt = LocalDateTime.of(today, pt.getRemindTime());
+            generateTaskIfAbsent(plan, pt, scheduledAt);
         }
     }
 

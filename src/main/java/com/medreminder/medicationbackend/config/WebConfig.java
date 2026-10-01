@@ -6,7 +6,7 @@ import org.springframework.web.servlet.config.annotation.WebMvcConfigurer;
 
 /**
  * Web 配置：注册拦截器。
- * /api/** 全部需要登录；登录接口和健康检查放行。
+ * /api/** 全部需要登录；注册、登录、健康检查放行（这三个是「拿 token 之前」的入口）。
  */
 @Configuration
 public class WebConfig implements WebMvcConfigurer {
@@ -21,6 +21,6 @@ public class WebConfig implements WebMvcConfigurer {
     public void addInterceptors(InterceptorRegistry registry) {
         registry.addInterceptor(authInterceptor)
                 .addPathPatterns("/api/**")
-                .excludePathPatterns("/api/auth/login", "/api/health");
+                .excludePathPatterns("/api/auth/login", "/api/auth/register", "/api/health");
     }
 }

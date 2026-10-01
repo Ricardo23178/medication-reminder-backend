@@ -32,6 +32,29 @@ public class ReminderController {
         return Result.ok(reminderService.listToday(UserContext.userId()));
     }
 
+    /**
+     * 手动触发一次「为所有 ACTIVE 计划生成今天任务」（测试/演示用）。
+     * 正常情况下由定时任务自动跑；这个口子让你在 Apifox 里点一下就能立刻看到闭环效果，
+     * 不用等定时器或真实时间点。幂等，重复点不会产生脏数据。
+     */
+    @PostMapping("/generate-today")
+    public Result<String> generateToday() {
+        reminderService.generateTodayTasksForAll();
+        return Result.ok("已生成当天提醒任务");
+    }
+
+    /**
+     * 手动触发一次「扫描超时未确认任务，生成异常事件」（测试/演示用）。
+     * 正常情况下由定时任务自动跑；这个口子让你在 Apifox 里点一下就能立刻验证
+     * 「超时 → 生成异常事件 → 家属可查」的完整链路，不用等定时器或真实超时时间点。
+     * 幂等，重复点不会产生重复异常（uk_task_type 唯一键兜底）。
+     */
+    @PostMapping("/scan-expired")
+    public Result<String> scanExpired() {
+        reminderService.scanExpiredTasks();
+        return Result.ok("已扫描超时任务并生成异常事件");
+    }
+
     /** 确认服药（幂等） */
     @PostMapping("/{id}/confirm")
     public Result<RemindTaskVO> confirm(@PathVariable Long id, @Valid @RequestBody ConfirmRequest req) {
