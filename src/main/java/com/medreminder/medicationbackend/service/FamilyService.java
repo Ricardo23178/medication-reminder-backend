@@ -1,6 +1,7 @@
 package com.medreminder.medicationbackend.service;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.medreminder.medicationbackend.dto.AcceptInviteRequest;
 import com.medreminder.medicationbackend.dto.InviteRequest;
 import com.medreminder.medicationbackend.entity.AbnormalEvent;
@@ -209,11 +210,15 @@ public class FamilyService {
             return false;
         }
 
-        rel.setRelationStatus("REVOKED");
-        rel.setUnbindTime(LocalDateTime.now());
-        rel.setInviteCode(null);
-        rel.setInviteExpireAt(null);
-        relationMapper.updateById(rel);
+        // 释放唯一键：把 family_user_id 置空，允许日后同一对重新绑定。
+        // 注意不能用 updateById（MyBatis-Plus 默认跳过 null 字段），必须用 wrapper 显式 set null。
+        relationMapper.update(null, new LambdaUpdateWrapper<FamilyRelation>()
+                .eq(FamilyRelation::getId, relationId)
+                .set(FamilyRelation::getRelationStatus, "REVOKED")
+                .set(FamilyRelation::getFamilyUserId, null)
+                .set(FamilyRelation::getUnbindTime, LocalDateTime.now())
+                .set(FamilyRelation::getInviteCode, null)
+                .set(FamilyRelation::getInviteExpireAt, null));
         return true;
     }
 
