@@ -1,7 +1,9 @@
 package com.medreminder.medicationbackend.service;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
-import com.medreminder.medicationbackend.common.Result;
+import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
+import com.medreminder.medicationbackend.entity.RemindTask;
+import com.medreminder.medicationbackend.mapper.RemindTaskMapper;
 import com.medreminder.medicationbackend.dto.PlanRequest;
 import com.medreminder.medicationbackend.entity.MedicationPlan;
 import com.medreminder.medicationbackend.entity.Medicine;
@@ -14,9 +16,9 @@ import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
 import java.time.LocalTime;
-import java.util.ArrayList;
+import java.time.LocalDateTime;
+import java.util.HashSet;
 import java.util.List;
-import java.util.Map;
 import java.util.stream.Collectors;
 
 /**
@@ -33,11 +35,14 @@ public class PlanService {
     private final PlanMapper planMapper;
     private final PlanTimeMapper planTimeMapper;
     private final MedicineMapper medicineMapper;
+    private final RemindTaskMapper taskMapper;
 
-    public PlanService(PlanMapper planMapper, PlanTimeMapper planTimeMapper, MedicineMapper medicineMapper) {
+    public PlanService(PlanMapper planMapper, PlanTimeMapper planTimeMapper, MedicineMapper medicineMapper,
+                       RemindTaskMapper taskMapper) {
         this.planMapper = planMapper;
         this.planTimeMapper = planTimeMapper;
         this.medicineMapper = medicineMapper;
+        this.taskMapper = taskMapper;
     }
 
     /** 查当前用户的计划列表（含时间点和药品名） */
@@ -61,6 +66,7 @@ public class PlanService {
      */
     @Transactional
     public PlanVO create(Long userId, PlanRequest req) {
+        validateRequest(req, true);
         // 校验药品归属（防止拿别人的药建计划）
         Medicine medicine = medicineMapper.selectOne(
                 new LambdaQueryWrapper<Medicine>()
@@ -74,6 +80,8 @@ public class PlanService {
         plan.setUserId(userId);
         applyRequest(plan, req);
         plan.setStatus("ACTIVE"); // 新建直接进入执行中（方案 1 简化：不引入 DRAFT 草稿态）
+        plan.setCreateTime(LocalDateTime.now());
+        plan.setUpdateTime(plan.getCreateTime());
         planMapper.insert(plan);
 
         saveTimes(plan.getId(), req.getRemindTimes());
@@ -83,11 +91,19 @@ public class PlanService {
     /** 修改计划（事务）。非本人返回 null。 */
     @Transactional
     public PlanVO update(Long userId, Long id, PlanRequest req) {
-        MedicationPlan plan = findOwned(userId, id);
+        MedicationPlan plan = findOwnedForUpdate(userId, id);
         if (plan == null) {
             return null;
         }
+        validateRequest(req, false);
+        Medicine medicine = medicineMapper.selectOne(new LambdaQueryWrapper<Medicine>()
+                .eq(Medicine::getId, req.getMedicineId()).eq(Medicine::getUserId, userId));
+        if (medicine == null) {
+            throw new IllegalArgumentException("药品不存在或无权使用");
+        }
+        cancelPendingTasks(userId, id);
         applyRequest(plan, req);
+        plan.setUpdateTime(LocalDateTime.now());
         planMapper.updateById(plan);
 
         // 时间点：先删旧再插新（简单可靠，避免比对差异）
@@ -96,38 +112,48 @@ public class PlanService {
                     .eq(PlanTime::getPlanId, id));
             saveTimes(id, req.getRemindTimes());
         }
+        if ("ACTIVE".equals(plan.getStatus()) && req.getRemindTimes() == null) {
+            restoreFutureTasks(userId, id, plan);
+        }
         return toVO(plan);
     }
 
     /** 暂停计划：ACTIVE → PAUSED。非本人或状态不对返回 null */
+    @Transactional
     public PlanVO pause(Long userId, Long id) {
-        MedicationPlan plan = findOwned(userId, id);
+        MedicationPlan plan = findOwnedForUpdate(userId, id);
         if (plan == null || !"ACTIVE".equals(plan.getStatus())) {
             return null;
         }
         plan.setStatus("PAUSED");
+        plan.setUpdateTime(LocalDateTime.now());
         planMapper.updateById(plan);
+        cancelPendingTasks(userId, id);
         return toVO(plan);
     }
 
     /** 恢复计划：PAUSED → ACTIVE。非本人或状态不对返回 null */
+    @Transactional
     public PlanVO resume(Long userId, Long id) {
-        MedicationPlan plan = findOwned(userId, id);
+        MedicationPlan plan = findOwnedForUpdate(userId, id);
         if (plan == null || !"PAUSED".equals(plan.getStatus())) {
             return null;
         }
         plan.setStatus("ACTIVE");
+        plan.setUpdateTime(LocalDateTime.now());
         planMapper.updateById(plan);
+        restoreFutureTasks(userId, id, plan);
         return toVO(plan);
     }
 
     /** 删除计划（逻辑删除，同时逻辑删除时间点）。非本人返回 false */
     @Transactional
     public boolean delete(Long userId, Long id) {
-        MedicationPlan plan = findOwned(userId, id);
+        MedicationPlan plan = findOwnedForUpdate(userId, id);
         if (plan == null) {
             return false;
         }
+        cancelPendingTasks(userId, id);
         planMapper.deleteById(id);
         // plan_time 没有逻辑删除字段，物理删除即可（计划没了时间点也没意义）
         planTimeMapper.delete(new LambdaQueryWrapper<PlanTime>().eq(PlanTime::getPlanId, id));
@@ -140,6 +166,71 @@ public class PlanService {
                 new LambdaQueryWrapper<MedicationPlan>()
                         .eq(MedicationPlan::getId, id)
                         .eq(MedicationPlan::getUserId, userId));
+    }
+
+    private void cancelPendingTasks(Long userId, Long planId) {
+        taskMapper.update(null, new LambdaUpdateWrapper<RemindTask>()
+                .eq(RemindTask::getUserId, userId).eq(RemindTask::getPlanId, planId)
+                .in(RemindTask::getStatus, "WAITING", "TRIGGERED")
+                .set(RemindTask::getStatus, "CANCELLED"));
+    }
+
+    private MedicationPlan findOwnedForUpdate(Long userId, Long id) {
+        return planMapper.selectOne(new LambdaQueryWrapper<MedicationPlan>()
+                .eq(MedicationPlan::getId, id).eq(MedicationPlan::getUserId, userId)
+                .last("FOR UPDATE"));
+    }
+
+    private void restoreFutureTasks(Long userId, Long planId, MedicationPlan plan) {
+        // 只恢复当前规则内、未来的提醒，不重放暂停期间错过的任务。
+        List<Long> timeIds = planTimeMapper.selectList(new LambdaQueryWrapper<PlanTime>()
+                        .eq(PlanTime::getPlanId, planId).eq(PlanTime::getEnabled, 1))
+                .stream().map(PlanTime::getId).toList();
+        if (timeIds.isEmpty()) {
+            return;
+        }
+        LambdaUpdateWrapper<RemindTask> restore = new LambdaUpdateWrapper<RemindTask>()
+                .eq(RemindTask::getUserId, userId).eq(RemindTask::getPlanId, planId)
+                .in(RemindTask::getPlanTimeId, timeIds)
+                .eq(RemindTask::getStatus, "CANCELLED")
+                .gt(RemindTask::getScheduledAt, LocalDateTime.now())
+                .set(RemindTask::getStatus, "WAITING");
+        if (plan.getStartDate() != null) {
+            restore.ge(RemindTask::getScheduledAt, plan.getStartDate().atStartOfDay());
+        }
+        if (plan.getEndDate() != null) {
+            restore.lt(RemindTask::getScheduledAt, plan.getEndDate().plusDays(1).atStartOfDay());
+        }
+        taskMapper.update(null, restore);
+    }
+
+    private void validateRequest(PlanRequest req, boolean creating) {
+        if (req.getStartDate() == null || (req.getEndDate() != null
+                && req.getEndDate().isBefore(req.getStartDate()))) {
+            throw new IllegalArgumentException("结束日期不能早于开始日期");
+        }
+        if (req.getDosagePerTime() != null && req.getDosagePerTime().signum() <= 0) {
+            throw new IllegalArgumentException("单次服用量必须大于零");
+        }
+        if (req.getMealRelation() != null && (req.getMealRelation() < 0 || req.getMealRelation() > 4)) {
+            throw new IllegalArgumentException("餐时类型不正确");
+        }
+        if (req.getRemindTimes() == null && !creating) {
+            return;
+        }
+        if (req.getRemindTimes() == null || req.getRemindTimes().isEmpty()
+                || req.getRemindTimes().size() > 24) {
+            throw new IllegalArgumentException("每日提醒时间点必须为1至24个");
+        }
+        HashSet<LocalTime> times = new HashSet<>();
+        for (String value : req.getRemindTimes()) {
+            if (value == null || !value.matches("([01]\\d|2[0-3]):[0-5]\\d")) {
+                throw new IllegalArgumentException("提醒时间格式必须为HH:mm");
+            }
+            if (!times.add(LocalTime.parse(value))) {
+                throw new IllegalArgumentException("提醒时间点不能重复");
+            }
+        }
     }
 
     /** 入参拷贝到实体 */

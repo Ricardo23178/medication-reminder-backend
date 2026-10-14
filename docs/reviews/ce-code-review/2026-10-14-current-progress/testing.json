@@ -1,0 +1,47 @@
+{
+  "reviewer": "testing",
+  "findings": [
+    {
+      "title": "Delay test never checks persisted reminder time",
+      "severity": "P2",
+      "file": "src/test/java/com/medreminder/medicationbackend/service/CurrentProgressRegressionTest.java",
+      "line": 46,
+      "why_it_matters": "A delayed reminder can still expire at its original time or fail to trigger again while this test passes, because it checks only the in-memory task status. The new behavior depends on the update wrapper persisting a later trigger and expiry time. Capturing that wrapper or exercising the path against a database would verify the time extension users rely on.",
+      "autofix_class": "gated_auto",
+      "owner": "downstream-resolver",
+      "requires_verification": true,
+      "suggested_fix": "Add a focused delay test that inspects the update wrapper's persisted lastTriggerAt and expireAt values, preferably with a fixed clock or a bounded before/after interval; also assert the reminder remains confirmable after the original expiry.",
+      "confidence": 75,
+      "evidence": [
+        "src/test/java/com/medreminder/medicationbackend/service/CurrentProgressRegressionTest.java:46 -- assertEquals(\"TRIGGERED\", task.getStatus());",
+        "src/test/java/com/medreminder/medicationbackend/service/CurrentProgressRegressionTest.java:38 -- when(tasks.update(isNull(), any(Wrapper.class))).thenReturn(1);",
+        "src/main/java/com/medreminder/medicationbackend/service/ReminderService.java:155-156 -- transition.set(RemindTask::getLastTriggerAt, now.plusMinutes(delayMinutes)).set(RemindTask::getExpireAt, now.plusMinutes(delayMinutes + CONFIRM_WINDOW_MINUTES));"
+      ],
+      "pre_existing": false
+    },
+    {
+      "title": "Ownership test does not verify user filter",
+      "severity": "P2",
+      "file": "src/test/java/com/medreminder/medicationbackend/service/CurrentProgressRegressionTest.java",
+      "line": 116,
+      "why_it_matters": "Changing the medicine lookup to ignore user ownership would still leave this test green: the unstubbed mapper returns null for every query. That would let an update accept another patient's medicine in real use. Assert the generated lookup includes both the requested medicine ID and current user ID, or test against a database containing both users' medicines.",
+      "autofix_class": "gated_auto",
+      "owner": "downstream-resolver",
+      "requires_verification": true,
+      "suggested_fix": "Capture the MedicineMapper query wrapper and assert it filters by medicine ID and user ID, or replace the mock with a small integration fixture containing an owned and a foreign medicine.",
+      "confidence": 75,
+      "evidence": [
+        "src/test/java/com/medreminder/medicationbackend/service/CurrentProgressRegressionTest.java:116 -- assertThrows(IllegalArgumentException.class, () -> service.update(1L, 2L, request));",
+        "src/test/java/com/medreminder/medicationbackend/service/CurrentProgressRegressionTest.java:109 -- MedicineMapper medicines = mock(MedicineMapper.class);",
+        "src/main/java/com/medreminder/medicationbackend/service/PlanService.java:99-100 -- Medicine medicine = medicineMapper.selectOne(new LambdaQueryWrapper<Medicine>().eq(Medicine::getId, req.getMedicineId()).eq(Medicine::getUserId, userId));"
+      ],
+      "pre_existing": false
+    }
+  ],
+  "residual_risks": [],
+  "testing_gaps": [
+    "Plan pause, resume, update, and delete now cancel or restore existing reminders, but no test exercises the lifecycle or verifies that only future tasks under enabled time points are restored. A database-backed lifecycle test would catch stale or missing reminders after plan changes.",
+    "scanExpiredTasks now changes a prior DELAYED record to UNCONFIRMED and emits an event and notification after a conditional claim; no test covers either the delayed-record expiry or a failed claim, so duplicate or missing alerts remain unverified.",
+    "The statistics test contains only a TAKEN record. It does not verify that a DELAYED-only response remains unconfirmed and contributes zero to completion rate, which is a changed user-visible statistic."
+  ]
+}

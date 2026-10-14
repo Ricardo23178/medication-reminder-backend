@@ -1,0 +1,8 @@
+{
+  "reviewer": "correctness",
+  "findings": [],
+  "residual_risks": [],
+  "testing_gaps": [
+    "CurrentProgressRegressionTest mocks mapper outcomes without exercising SQL predicates or row locks. Add a database-backed scenario covering changing today's time points after an earlier dose, and pause/resume before and after the scheduled time; verify no past dose is regenerated and future cancelled tasks are restored once."
+  ]
+}

@@ -39,6 +39,9 @@ public class ReminderController {
      */
     @PostMapping("/generate-today")
     public Result<String> generateToday() {
+        if (!"ADMIN".equals(UserContext.role())) {
+            return Result.error(403, "仅管理员可触发系统任务");
+        }
         reminderService.generateTodayTasksForAll();
         return Result.ok("已生成当天提醒任务");
     }
@@ -51,6 +54,9 @@ public class ReminderController {
      */
     @PostMapping("/scan-expired")
     public Result<String> scanExpired() {
+        if (!"ADMIN".equals(UserContext.role())) {
+            return Result.error(403, "仅管理员可触发系统任务");
+        }
         reminderService.scanExpiredTasks();
         return Result.ok("已扫描超时任务并生成异常事件");
     }
@@ -73,6 +79,9 @@ public class ReminderController {
             }
             case 3 -> {
                 return Result.error(400, "提醒已超时，无法确认");
+            }
+            case 4 -> {
+                return Result.error(400, "提醒已取消或状态已变更，请刷新后重试");
             }
             default -> {
                 return Result.error(403, "提醒任务不存在或无权操作");

@@ -1,6 +1,9 @@
 package com.medreminder.medicationbackend.dto;
 
 import jakarta.validation.constraints.NotBlank;
+import jakarta.validation.constraints.Pattern;
+import jakarta.validation.constraints.Min;
+import jakarta.validation.constraints.Max;
 import lombok.Data;
 
 /**
@@ -14,9 +17,12 @@ public class ConfirmRequest {
 
     /** TAKEN / DELAYED / SKIPPED */
     @NotBlank(message = "操作类型不能为空")
+    @Pattern(regexp = "TAKEN|DELAYED|SKIPPED", message = "操作类型不正确")
     private String action;
 
     /** 「稍后」顺延的分钟数（action=DELAYED 时用） */
+    @Min(value = 1, message = "稍后时间至少1分钟")
+    @Max(value = 120, message = "稍后时间最多120分钟")
     private Integer delayMinutes;
 
     /** 「跳过」原因（action=SKIPPED 时用，用户自报） */

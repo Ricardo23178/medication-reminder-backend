@@ -20,9 +20,9 @@ import java.util.Map;
  *
  * 统计口径（与导师第九节「仅作记录展示」一致，不做医学判断）：
  *   - 应完成：以 remind_task 为准，按 scheduled_at 的日期分组计数（当天该吃几剂）。
- *   - 已服/稍后/跳过：来自 medication_record 的 action 分组。
- *   - 未确认：应完成 - 已服 - 稍后 - 跳过（含超时 EXPIRED 与仍在 WAITING 的）。
- *   - 完成率：(已服 + 稍后) / 应完成。稍后视作「已响应」——用户做了动作，不算漏。
+ *   - 已服/稍后/跳过：按任务原定日期，对 medication_record 的 action 分组。
+ *   - 未确认：应完成 - 已服 - 跳过（含稍后待确认、超时 EXPIRED 和 WAITING）。
+ *   - 完成率：已服 / 应完成；稍后是响应，不代表已经服药。取消任务不计入分母。
  *
  * 越权：所有查询都按 user_id 过滤，只能看自己的统计。
  */
@@ -52,6 +52,9 @@ public class StatisticsService {
         if (startDate == null) {
             startDate = endDate.minusDays(29);
         }
+        if (startDate.isAfter(endDate) || java.time.temporal.ChronoUnit.DAYS.between(startDate, endDate) > 365) {
+            throw new IllegalArgumentException("统计日期范围必须按先后顺序且不超过366天");
+        }
 
         LocalDateTime from = startDate.atStartOfDay();
         LocalDateTime to = endDate.plusDays(1).atStartOfDay();
@@ -62,24 +65,29 @@ public class StatisticsService {
                         .eq(RemindTask::getUserId, userId)
                         .ge(RemindTask::getScheduledAt, from)
                         .lt(RemindTask::getScheduledAt, to));
+        tasks = tasks.stream().filter(t -> !"CANCELLED".equals(t.getStatus())).toList();
 
         Map<LocalDate, Integer> shouldMap = new HashMap<>();
+        Map<Long, LocalDate> taskDates = new HashMap<>();
         for (RemindTask t : tasks) {
             LocalDate d = t.getScheduledAt().toLocalDate();
             shouldMap.merge(d, 1, Integer::sum);
+            taskDates.put(t.getId(), d);
         }
 
-        // 2) 实际执行：该范围内该用户的服药记录，按日期 + action 分组
-        List<MedicationRecord> records = recordMapper.selectList(
+        // 2) 按任务关联记录，允许午夜后的确认归入前一天的原定提醒。
+        List<MedicationRecord> records = taskDates.isEmpty() ? List.of() : recordMapper.selectList(
                 new LambdaQueryWrapper<MedicationRecord>()
                         .eq(MedicationRecord::getUserId, userId)
-                        .ge(MedicationRecord::getActionTime, from)
-                        .lt(MedicationRecord::getActionTime, to));
+                        .in(MedicationRecord::getTaskId, taskDates.keySet()));
 
         // date -> action -> count
         Map<LocalDate, Map<String, Integer>> actionMap = new HashMap<>();
         for (MedicationRecord r : records) {
-            LocalDate d = r.getActionTime().toLocalDate();
+            LocalDate d = taskDates.get(r.getTaskId());
+            if (d == null) {
+                continue;
+            }
             actionMap.computeIfAbsent(d, k -> new HashMap<>())
                     .merge(r.getAction(), 1, Integer::sum);
         }
@@ -99,8 +107,8 @@ public class StatisticsService {
             int taken = acts.getOrDefault("TAKEN", 0);
             int delayed = acts.getOrDefault("DELAYED", 0);
             int skipped = acts.getOrDefault("SKIPPED", 0);
-            int unconfirmed = Math.max(0, should - taken - delayed - skipped);
-            double rate = should == 0 ? 0.0 : round1((taken + delayed) * 100.0 / should);
+            int unconfirmed = Math.max(0, should - taken - skipped);
+            double rate = should == 0 ? 0.0 : round1(taken * 100.0 / should);
 
             CalendarStatVO.DayStat day = new CalendarStatVO.DayStat();
             day.setDate(cursor);
@@ -129,7 +137,7 @@ public class StatisticsService {
         summary.setTotalDelayed(totalDelayed);
         summary.setTotalSkipped(totalSkipped);
         summary.setTotalUnconfirmed(totalUnconfirmed);
-        summary.setCompletionRate(totalShould == 0 ? 0.0 : round1((totalTaken + totalDelayed) * 100.0 / totalShould));
+        summary.setCompletionRate(totalShould == 0 ? 0.0 : round1(totalTaken * 100.0 / totalShould));
         vo.setSummary(summary);
 
         return vo;

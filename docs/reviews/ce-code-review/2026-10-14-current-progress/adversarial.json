@@ -1,0 +1,27 @@
+{
+  "reviewer": "adversarial",
+  "findings": [
+    {
+      "title": "Stale unauthorized responses erase a new login",
+      "severity": "P2",
+      "file": "MedicationReminder/entry/src/main/ets/common/HttpUtil.ets",
+      "line": 84,
+      "why_it_matters": "Two authenticated requests using an expired token can return 401 at different times. The first redirects to Login; the user successfully signs in, saveToken clears redirectingToLogin, and the second old response then deletes the newly saved token and redirects again. Slow network responses can log out a freshly authenticated session.",
+      "autofix_class": "gated_auto",
+      "owner": "downstream-resolver",
+      "requires_verification": true,
+      "suggested_fix": "Capture the token or session generation at request dispatch and process a 401 only if it still matches the active session; increment the generation on successful saveToken. Keep redirect de-duplication within that session generation.",
+      "confidence": 75,
+      "evidence": [
+        "MedicationReminder/entry/src/main/ets/common/HttpUtil.ets:84: if (needAuth && resp.responseCode === 401 && !HttpUtil.redirectingToLogin) {",
+        "MedicationReminder/entry/src/main/ets/common/HttpUtil.ets:87: await prefs.delete(Constants.KEY_TOKEN);",
+        "saveToken sets HttpUtil.redirectingToLogin = false after saving credentials, permitting a delayed old response to enter the deletion branch."
+      ],
+      "pre_existing": false
+    }
+  ],
+  "residual_risks": [],
+  "testing_gaps": [
+    "CurrentProgressRegressionTest uses mocked mapper updates, so SQL locking/conditional claim interleavings are not exercised against a database. Target concurrent generation versus pause and invitation double claim with real transaction boundaries."
+  ]
+}

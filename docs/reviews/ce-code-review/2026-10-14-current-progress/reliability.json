@@ -1,0 +1,7 @@
+{
+  "residual_risks": [],
+  "testing_gaps": [],
+  "coverage": "Local orchestrator pass; no independent subagent coverage",
+  "findings": [],
+  "reviewer": "reliability"
+}

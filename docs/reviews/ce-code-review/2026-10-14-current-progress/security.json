@@ -1,0 +1,10 @@
+{
+  "reviewer": "security",
+  "findings": [],
+  "residual_risks": [],
+  "testing_gaps": [
+    "Concurrent acceptance of the same family invitation is protected by a conditional database update, but CurrentProgressRegressionTest has no database-backed two-client acceptance test verifying exactly one ACTIVE binding and clearing invite_code/invite_expire_at.",
+    "The existing medicine-ownership regression mocks a missing medicine without inspecting the SQL ownership predicate; a database-backed request with another user's real medicine would verify the complete IDOR rejection path.",
+    "Expired-session clearing and single login redirection in HttpUtil have no runtime evidence for simultaneous 401 responses; verify token, nickname, and user ID are removed and protected pages disappear from the back stack."
+  ]
+}

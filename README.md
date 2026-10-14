@@ -22,7 +22,7 @@
 - **JWT 无状态认证**：登录签发 token，`AuthInterceptor` 拦截校验，`ThreadLocal` 传递当前用户
 - **越权防护**：所有数据操作按 `user_id` 过滤（`id + user_id` 双条件），防止横向越权
 - **状态机建模**：计划 / 提醒任务 / 服药记录 / 异常事件 四套状态机
-- **定时任务**：`@Scheduled` 每 5 分钟自动生成当日提醒、扫描超时未确认任务
+- **定时任务**：`@Scheduled` 每 5 分钟自动生成当日提醒、扫描超时未确认任务；变更计划会取消待执行任务
 - **家属协同**：owner 发起邀请码 → family 凭码接受，授权权在数据主体手里，解绑后权限即时失效
 - **幂等设计**：确认服药、生成任务、异常事件均有唯一键兜底，防重复
 
@@ -42,7 +42,7 @@
 | 家属 | GET | `/api/family/abnormal-events` |
 | 统计 | GET | `/api/statistics/calendar` |
 
-> 另有 2 个测试辅助接口：`POST /api/reminders/generate-today`、`POST /api/reminders/scan-expired`（手动触发定时任务，调试用）。
+> 另有 2 个测试辅助接口：`POST /api/reminders/generate-today`、`POST /api/reminders/scan-expired`（仅 ADMIN 可手动触发）。普通用户查询今日提醒时会按需生成本人任务。
 
 ## 目录结构
 
@@ -63,7 +63,7 @@ src/main/java/com/medreminder/medicationbackend/
 
 ### 前置条件
 
-- JDK 21+（Spring Boot 3.5 要求）
+- JDK 17+（以 `pom.xml` 的 Java 17 编译目标为准；本次使用现有 JDK 23 验证）
 - MySQL 8.0（数据库 `medication_system`，账号 `root`）
 
 ### 1. 建库建表
@@ -72,7 +72,7 @@ src/main/java/com/medreminder/medicationbackend/
 CREATE DATABASE medication_system DEFAULT CHARACTER SET utf8mb4;
 ```
 
-然后执行建表脚本（项目根目录 `project/db/schema.sql`）。
+当前交付目录未附建表脚本，原先说明中的 `project/db/schema.sql` 路径不存在。已有数据库可继续使用；新环境需要先取得并核对原始建表脚本，尤其是提醒任务、服药记录、异常事件的唯一键。仅建空数据库不能直接运行业务。
 
 ### 2. 修改数据库配置
 
@@ -98,3 +98,17 @@ spring:
 ## 默认测试账号
 
 > 首次运行会通过 `DataInitializer` 初始化管理员账号（如需），普通用户通过 `/api/auth/register` 注册。
+
+`DataInitializer` 只处理已存在且密码为占位符的 admin 记录，不会自动创建管理员。普通用户不能调用全库调试接口。
+
+## 当前阶段优化与测试
+
+- “稍后”默认15分钟，保持待确认；后续已服/跳过更新同一条记录。超时生成 `UNCONFIRMED` 记录。
+- 日历按提醒原定日期统计；取消任务不计入应完成数，完成率为“已服 / 应完成”。稍后仍需最终确认。
+- 家属异常查询要求生效关系和 `ABNORMAL_EVENT` 授权；邀请码通过条件更新领取一次。
+- 数据库配置支持 `DB_URL`、`DB_USERNAME`、`DB_PASSWORD`；令牌密钥支持 `JWT_SECRET`。本地默认值保留，部署时通过环境变量覆盖。
+- 默认关闭 SQL 明细日志；调试时可设置 `MYBATIS_LOG_IMPL=org.apache.ibatis.logging.stdout.StdOutImpl`。
+
+执行 `./mvnw test` 运行回归测试和 Spring MVC/JWT 鉴权测试。测试通过属性关闭调度与管理员初始化，不修改现有数据库数据。数据库并发和客户端真机流程仍需联调验证。
+
+当前通知仅创建待发送记录；不把 `PENDING` 描述成已推送或已通知家属。消息中心、通知发送重试、后台等后续模块本次未扩展。

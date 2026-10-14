@@ -1,0 +1,12 @@
+{
+  "residual_risks": [
+    "Database schema and unique-key definitions are absent from this delivered workspace; MySQL locking and concurrency behavior were not validated against a real database.",
+    "HarmonyOS device interactions were not exercised; a successful HAP compile does not prove navigation or notification behavior."
+  ],
+  "testing_gaps": [
+    "Real database interleavings remain untested for simultaneous invitation claims, plan changes versus task generation, and confirmations versus expiry scans.",
+    "Delay and ownership tests inspect wrapper structure but do not validate bound timestamp/ownership values against stored rows.",
+    "Expiry of an existing DELAYED record still lacks a dedicated behavioral regression; repeated expiry/new UNCONFIRMED insertion is covered.",
+    "Runtime verification remains outstanding for rapid taps, concurrent expired requests, stale unauthorized responses after login, and back-stack clearing."
+  ]
+}

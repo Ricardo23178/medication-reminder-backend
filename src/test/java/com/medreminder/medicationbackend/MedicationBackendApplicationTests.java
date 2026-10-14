@@ -2,12 +2,48 @@ package com.medreminder.medicationbackend;
 
 import org.junit.jupiter.api.Test;
 import org.springframework.boot.test.context.SpringBootTest;
+import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
+import org.springframework.beans.factory.annotation.Autowired;
+import org.springframework.test.web.servlet.MockMvc;
+import com.medreminder.medicationbackend.util.JwtUtil;
+import java.util.List;
+import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.*;
+import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
 
-@SpringBootTest
+@SpringBootTest(properties = {"reminder.scheduling.enabled=false", "app.initialize-admin=false"})
+@AutoConfigureMockMvc
 class MedicationBackendApplicationTests {
+    @Autowired
+    MockMvc mvc;
+    @Autowired
+    JwtUtil jwt;
 
     @Test
     void contextLoads() {
+    }
+
+    @Test
+    void unauthenticatedBusinessRequestIsRejected() throws Exception {
+        mvc.perform(get("/api/reminders/today"))
+                .andExpect(status().isUnauthorized());
+    }
+
+    @Test
+    void invalidTokenIsRejected() throws Exception {
+        mvc.perform(get("/api/plans")
+                        .header("Authorization", "Bearer invalid-token"))
+                .andExpect(status().isUnauthorized());
+    }
+
+    @Test
+    void ordinaryUserCannotRunGlobalSystemJobs() throws Exception {
+        String token = jwt.generate(1L, "USER");
+        for (String path : List.of("/api/reminders/generate-today", "/api/reminders/scan-expired")) {
+            mvc.perform(post(path)
+                            .header("Authorization", "Bearer " + token))
+                    .andExpect(status().isOk())
+                    .andExpect(jsonPath("$.code").value(403));
+        }
     }
 
 }

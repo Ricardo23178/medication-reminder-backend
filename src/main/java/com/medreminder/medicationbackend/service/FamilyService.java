@@ -26,6 +26,7 @@ import java.security.SecureRandom;
 import java.time.LocalDateTime;
 import java.util.ArrayList;
 import java.util.List;
+import java.util.Arrays;
 
 /**
  * 家属协同业务 —— 项目「协同」二字的落地。
@@ -85,6 +86,11 @@ public class FamilyService {
         String code = generateInviteCode();
         String scope = (req.getScope() == null || req.getScope().isBlank())
                 ? DEFAULT_SCOPE : req.getScope();
+        List<String> scopes = Arrays.stream(scope.split(",", -1)).map(String::trim).distinct().toList();
+        if (scopes.stream().anyMatch(s -> !"PLAN_STATUS".equals(s) && !"ABNORMAL_EVENT".equals(s))) {
+            throw new IllegalArgumentException("授权范围只能为PLAN_STATUS或ABNORMAL_EVENT");
+        }
+        scope = String.join(",", scopes);
 
         // 复用已存在的 PENDING 邀请（同一 owner 多次发起，只保留一条待确认记录）
         FamilyRelation rel = relationMapper.selectOne(
@@ -143,15 +149,21 @@ public class FamilyService {
         }
 
         // 绑定生效：PENDING → ACTIVE
-        rel.setFamilyUserId(familyUserId);
-        rel.setRelationStatus("ACTIVE");
-        rel.setBindTime(LocalDateTime.now());
-        // 清掉邀请码，防止邀请码被二次使用
-        rel.setInviteCode(null);
-        rel.setInviteExpireAt(null);
-
         try {
-            relationMapper.updateById(rel);
+            // 状态条件更新保证同一个邀请码只被一个家属领取；显式清空邀请码。
+            int updated = relationMapper.update(null, new LambdaUpdateWrapper<FamilyRelation>()
+                    .eq(FamilyRelation::getId, rel.getId())
+                    .eq(FamilyRelation::getRelationStatus, "PENDING")
+                    .eq(FamilyRelation::getInviteCode, req.getInviteCode())
+                    .gt(FamilyRelation::getInviteExpireAt, LocalDateTime.now())
+                    .set(FamilyRelation::getFamilyUserId, familyUserId)
+                    .set(FamilyRelation::getRelationStatus, "ACTIVE")
+                    .set(FamilyRelation::getBindTime, LocalDateTime.now())
+                    .set(FamilyRelation::getInviteCode, null)
+                    .set(FamilyRelation::getInviteExpireAt, null));
+            if (updated == 0) {
+                return 4;
+            }
         } catch (DuplicateKeyException e) {
             // uk_owner_family 兜底：同一对关系已存在（并发接受），视为已处理
             return 4;
@@ -241,9 +253,14 @@ public class FamilyService {
         }
 
         List<Long> ownerIds = actives.stream()
+                .filter(rel -> rel.getScope() != null && Arrays.stream(rel.getScope().split(","))
+                        .map(String::trim).anyMatch("ABNORMAL_EVENT"::equals))
                 .map(FamilyRelation::getOwnerUserId)
                 .distinct()
                 .toList();
+        if (ownerIds.isEmpty()) {
+            return new ArrayList<>();
+        }
 
         // 2) 查这些 owner 的异常事件（未关闭的优先）
         List<AbnormalEvent> events = eventMapper.selectList(

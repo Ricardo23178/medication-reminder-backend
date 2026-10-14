@@ -7,9 +7,9 @@ spring:
 
   datasource:
     driver-class-name: com.mysql.cj.jdbc.Driver
-    url: jdbc:mysql://localhost:3306/medication_system?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true
-    username: root
-    password: root123456
+    url: ${DB_URL:jdbc:mysql://localhost:3306/medication_system?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true}
+    username: ${DB_USERNAME:root}
+    password: ${DB_PASSWORD:root123456}
 
   jackson:
     date-format: yyyy-MM-dd HH:mm:ss
@@ -18,7 +18,7 @@ spring:
 mybatis-plus:
   configuration:
     map-underscore-to-camel-case: true   # 数据库下划线字段 -> Java 驼峰
-    log-impl: org.apache.ibatis.logging.stdout.StdOutImpl  # 开发期打印 SQL，答辩演示用；上线可删
+    log-impl: ${MYBATIS_LOG_IMPL:org.apache.ibatis.logging.nologging.NoLoggingImpl}
   global-config:
     db-config:
       id-type: auto
@@ -29,5 +29,5 @@ mybatis-plus:
 # JWT 配置：登录成功后签发的令牌
 jwt:
   # HS256 密钥，至少 32 字节。本机开发够用；答辩部署时换成环境变量注入
-  secret: med-reminder-2026-graduation-jwt-secret-key-32bytes
+  secret: ${JWT_SECRET:med-reminder-2026-graduation-jwt-secret-key-32bytes}
   expire-hours: 12

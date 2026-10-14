@@ -8,6 +8,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.boot.CommandLineRunner;
 import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
 import org.springframework.stereotype.Component;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 
 /**
  * 启动初始化器。
@@ -16,6 +17,7 @@ import org.springframework.stereotype.Component;
  * 之后每次启动不会再触发。对应 schema.sql 注释里「首次登录时强制修改」的约定。
  */
 @Component
+@ConditionalOnProperty(name = "app.initialize-admin", havingValue = "true", matchIfMissing = true)
 public class DataInitializer implements CommandLineRunner {
 
     private static final Logger log = LoggerFactory.getLogger(DataInitializer.class);
@@ -35,7 +37,7 @@ public class DataInitializer implements CommandLineRunner {
                 && admin.getPasswordHash().contains("PLACEHOLDER")) {
             admin.setPasswordHash(new BCryptPasswordEncoder().encode(ADMIN_DEFAULT_PASSWORD));
             userMapper.updateById(admin);
-            log.info("[初始化] admin 管理员密码已重置为默认口令 {}", ADMIN_DEFAULT_PASSWORD);
+            log.info("[初始化] admin 管理员密码已初始化，请及时修改默认口令");
         }
     }
 }

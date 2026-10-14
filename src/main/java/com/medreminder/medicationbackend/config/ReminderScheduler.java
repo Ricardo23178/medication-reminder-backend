@@ -5,6 +5,7 @@ import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.scheduling.annotation.Scheduled;
 import org.springframework.stereotype.Component;
+import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
 
 /**
  * 提醒任务定时调度器 —— 服药闭环的「发动机」。
@@ -22,6 +23,7 @@ import org.springframework.stereotype.Component;
  * - 跨天时自动补生成新一天的任务（凌晨 00:05 那一轮扫到新日期）。
  */
 @Component
+@ConditionalOnProperty(name = "reminder.scheduling.enabled", havingValue = "true", matchIfMissing = true)
 public class ReminderScheduler {
 
     private static final Logger log = LoggerFactory.getLogger(ReminderScheduler.class);
