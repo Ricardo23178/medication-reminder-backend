@@ -7,13 +7,11 @@ import com.medreminder.medicationbackend.entity.AbnormalEvent;
 import com.medreminder.medicationbackend.entity.MedicationPlan;
 import com.medreminder.medicationbackend.entity.MedicationRecord;
 import com.medreminder.medicationbackend.entity.Medicine;
-import com.medreminder.medicationbackend.entity.Notification;
 import com.medreminder.medicationbackend.entity.PlanTime;
 import com.medreminder.medicationbackend.entity.RemindTask;
 import com.medreminder.medicationbackend.mapper.AbnormalEventMapper;
 import com.medreminder.medicationbackend.mapper.MedicationRecordMapper;
 import com.medreminder.medicationbackend.mapper.MedicineMapper;
-import com.medreminder.medicationbackend.mapper.NotificationMapper;
 import com.medreminder.medicationbackend.mapper.PlanMapper;
 import com.medreminder.medicationbackend.mapper.PlanTimeMapper;
 import com.medreminder.medicationbackend.mapper.RemindTaskMapper;
@@ -53,7 +51,7 @@ public class ReminderService {
     private final PlanTimeMapper planTimeMapper;
     private final MedicineMapper medicineMapper;
     private final AbnormalEventMapper abnormalEventMapper;
-    private final NotificationMapper notificationMapper;
+    private final NotificationService notificationService;
 
     public ReminderService(RemindTaskMapper remindTaskMapper,
                            MedicationRecordMapper recordMapper,
@@ -61,14 +59,14 @@ public class ReminderService {
                            PlanTimeMapper planTimeMapper,
                            MedicineMapper medicineMapper,
                            AbnormalEventMapper abnormalEventMapper,
-                           NotificationMapper notificationMapper) {
+                           NotificationService notificationService) {
         this.remindTaskMapper = remindTaskMapper;
         this.recordMapper = recordMapper;
         this.planMapper = planMapper;
         this.planTimeMapper = planTimeMapper;
         this.medicineMapper = medicineMapper;
         this.abnormalEventMapper = abnormalEventMapper;
-        this.notificationMapper = notificationMapper;
+        this.notificationService = notificationService;
     }
 
     /**
@@ -281,19 +279,8 @@ public class ReminderService {
                 continue;
             }
 
-            // 3) 给患者生成一条告警通知记录（家属协同的「通知」落点）
-            Notification notif = new Notification();
-            notif.setReceiverId(task.getUserId());
-            notif.setType("FAMILY_ALERT");
-            notif.setTitle("用药未确认提醒");
-            notif.setContent("您有用药提醒超时未确认，系统已记录异常。");
-            notif.setBizType("ABNORMAL_EVENT");
-            notif.setBizId(event.getId());
-            notif.setReadFlag(0);
-            notif.setSendStatus("PENDING");
-            notif.setRetryCount(0);
-            notif.setCreateTime(now);
-            notificationMapper.insert(notif);
+            // 与事件同事务入队，包含本人以及事件发生时已授权的家属。
+            notificationService.queueAbnormalEvent(event);
         }
     }
 

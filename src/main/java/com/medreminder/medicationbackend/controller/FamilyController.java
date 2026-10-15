@@ -79,7 +79,26 @@ public class FamilyController {
 
     /** 家属查看被授权对象的异常事件 */
     @GetMapping("/abnormal-events")
-    public Result<List<AbnormalEventVO>> abnormalEvents() {
-        return Result.ok(familyService.listAuthorizedAbnormalEvents(UserContext.userId()));
+    public Result<List<AbnormalEventVO>> abnormalEvents(
+            @RequestParam(defaultValue = "false") boolean includeClosed) {
+        return Result.ok(familyService.listAuthorizedAbnormalEvents(UserContext.userId(), includeClosed));
+    }
+
+    @PostMapping("/abnormal-events/{id}/acknowledge")
+    public Result<Void> acknowledge(@PathVariable Long id) {
+        return handleResult(familyService.handleAbnormalEvent(UserContext.userId(), id, false));
+    }
+
+    @PostMapping("/abnormal-events/{id}/close")
+    public Result<Void> close(@PathVariable Long id) {
+        return handleResult(familyService.handleAbnormalEvent(UserContext.userId(), id, true));
+    }
+
+    private Result<Void> handleResult(int code) {
+        return switch (code) {
+            case 0 -> Result.ok(null);
+            case 1 -> Result.error(403, "事件不存在或无权处理，请检查家属授权");
+            default -> Result.error(409, "事件状态已变更，请先确认知晓并刷新后重试");
+        };
     }
 }

@@ -39,7 +39,7 @@ public class Notification {
     /** 0=未读 1=已读 */
     private Integer readFlag;
 
-    /** PENDING待发送/SENT已发送/FAILED发送失败 */
+    /** PENDING待投递/SENT已发布至站内消息中心/FAILED投递失败/CANCELLED授权失效等原因取消 */
     private String sendStatus;
 
     /** 重试次数 */

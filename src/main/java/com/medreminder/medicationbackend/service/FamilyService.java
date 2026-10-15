@@ -242,6 +242,10 @@ public class FamilyService {
      * 再查这些 owner 的异常事件 —— 解绑后关系不再是 ACTIVE，自然查不到，权限即时失效。
      */
     public List<AbnormalEventVO> listAuthorizedAbnormalEvents(Long familyUserId) {
+        return listAuthorizedAbnormalEvents(familyUserId, false);
+    }
+
+    public List<AbnormalEventVO> listAuthorizedAbnormalEvents(Long familyUserId, boolean includeClosed) {
         // 1) 查我是家属、且关系生效中的 owner 列表
         List<FamilyRelation> actives = relationMapper.selectList(
                 new LambdaQueryWrapper<FamilyRelation>()
@@ -253,8 +257,7 @@ public class FamilyService {
         }
 
         List<Long> ownerIds = actives.stream()
-                .filter(rel -> rel.getScope() != null && Arrays.stream(rel.getScope().split(","))
-                        .map(String::trim).anyMatch("ABNORMAL_EVENT"::equals))
+                .filter(rel -> hasAbnormalScope(rel.getScope()))
                 .map(FamilyRelation::getOwnerUserId)
                 .distinct()
                 .toList();
@@ -266,7 +269,7 @@ public class FamilyService {
         List<AbnormalEvent> events = eventMapper.selectList(
                 new LambdaQueryWrapper<AbnormalEvent>()
                         .in(AbnormalEvent::getUserId, ownerIds)
-                        .ne(AbnormalEvent::getStatus, "CLOSED")
+                        .ne(!includeClosed, AbnormalEvent::getStatus, "CLOSED")
                         .orderByDesc(AbnormalEvent::getOccurredAt));
 
         List<AbnormalEventVO> result = new ArrayList<>();
@@ -274,6 +277,40 @@ public class FamilyService {
             result.add(toEventVO(e));
         }
         return result;
+    }
+
+    public static boolean hasAbnormalScope(String scope) {
+        return scope != null && Arrays.stream(scope.split(",")).map(String::trim)
+                .anyMatch("ABNORMAL_EVENT"::equals);
+    }
+
+    /** 返回0成功、1无授权、2状态不允许。先锁关系，再锁事件，与解绑操作串行化。 */
+    @Transactional
+    public int handleAbnormalEvent(Long familyUserId, Long eventId, boolean close) {
+        AbnormalEvent candidate = eventMapper.selectById(eventId);
+        if (candidate == null) return 1;
+        FamilyRelation relation = relationMapper.selectOne(new LambdaQueryWrapper<FamilyRelation>()
+                .eq(FamilyRelation::getOwnerUserId, candidate.getUserId())
+                .eq(FamilyRelation::getFamilyUserId, familyUserId)
+                .eq(FamilyRelation::getRelationStatus, "ACTIVE").last("FOR UPDATE"));
+        if (relation == null || !hasAbnormalScope(relation.getScope())) return 1;
+        AbnormalEvent event = eventMapper.selectOne(new LambdaQueryWrapper<AbnormalEvent>()
+                .eq(AbnormalEvent::getId, eventId).last("FOR UPDATE"));
+        if (event == null) return 1;
+        if (close) {
+            if ("CLOSED".equals(event.getStatus())) return 0;
+            if (!"ACKNOWLEDGED".equals(event.getStatus())) return 2;
+            event.setStatus("CLOSED");
+            event.setClosedAt(LocalDateTime.now());
+        } else {
+            if ("ACKNOWLEDGED".equals(event.getStatus())) return 0;
+            if (!"OPEN".equals(event.getStatus()) && !"NOTIFIED".equals(event.getStatus())) return 2;
+            event.setStatus("ACKNOWLEDGED");
+            event.setAcknowledgedBy(familyUserId);
+            event.setAcknowledgedAt(LocalDateTime.now());
+        }
+        eventMapper.updateById(event);
+        return 0;
     }
 
     // ==================== 内部方法 ====================
@@ -321,6 +358,7 @@ public class FamilyService {
         vo.setStatus(e.getStatus());
         vo.setOccurredAt(e.getOccurredAt());
         vo.setAcknowledgedAt(e.getAcknowledgedAt());
+        vo.setClosedAt(e.getClosedAt());
         vo.setCreateTime(e.getCreateTime());
 
         User user = userMapper.selectById(e.getUserId());

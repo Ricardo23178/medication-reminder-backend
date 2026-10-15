@@ -60,7 +60,7 @@ class CurrentProgressRegressionTest {
         RemindTaskMapper tasks = mock(RemindTaskMapper.class);
         ReminderService service = new ReminderService(tasks, mock(MedicationRecordMapper.class),
                 mock(PlanMapper.class), mock(PlanTimeMapper.class), mock(MedicineMapper.class),
-                mock(AbnormalEventMapper.class), mock(NotificationMapper.class));
+                mock(AbnormalEventMapper.class), mock(NotificationService.class));
         service.listToday(1L);
         verify(tasks).selectList(argThat((Wrapper<RemindTask> wrapper) ->
                 wrapper.getSqlSegment().contains(" OR ") && wrapper.getSqlSegment().contains("expire_at >=")
@@ -72,7 +72,7 @@ class CurrentProgressRegressionTest {
         RemindTaskMapper tasks = mock(RemindTaskMapper.class);
         MedicationRecordMapper records = mock(MedicationRecordMapper.class);
         AbnormalEventMapper events = mock(AbnormalEventMapper.class);
-        NotificationMapper notifications = mock(NotificationMapper.class);
+        NotificationService notifications = mock(NotificationService.class);
         RemindTask task = new RemindTask();
         task.setId(2L);
         task.setUserId(1L);
@@ -86,7 +86,7 @@ class CurrentProgressRegressionTest {
         service.scanExpiredTasks();
         service.scanExpiredTasks();
         verify(events, times(1)).insert(any(AbnormalEvent.class));
-        verify(notifications, times(1)).insert(argThat((Notification n) -> n.getBizId().equals(5L)));
+        verify(notifications, times(1)).queueAbnormalEvent(argThat((AbnormalEvent e) -> e.getId().equals(5L)));
         verify(records, times(1)).insert(argThat((MedicationRecord r) -> "UNCONFIRMED".equals(r.getAction())));
     }
     @BeforeAll
@@ -110,7 +110,7 @@ class CurrentProgressRegressionTest {
         when(tasks.update(isNull(), any(Wrapper.class))).thenReturn(1);
         ReminderService service = new ReminderService(tasks, records, mock(PlanMapper.class),
                 mock(PlanTimeMapper.class), mock(MedicineMapper.class), mock(AbnormalEventMapper.class),
-                mock(NotificationMapper.class));
+                mock(NotificationService.class));
         ConfirmRequest request = new ConfirmRequest();
         request.setAction("DELAYED");
         request.setDelayMinutes(15);
@@ -135,7 +135,7 @@ class CurrentProgressRegressionTest {
         when(records.selectOne(any(Wrapper.class))).thenReturn(record);
         ReminderService service = new ReminderService(tasks, records, mock(PlanMapper.class),
                 mock(PlanTimeMapper.class), mock(MedicineMapper.class), mock(AbnormalEventMapper.class),
-                mock(NotificationMapper.class));
+                mock(NotificationService.class));
         ConfirmRequest request = new ConfirmRequest();
         request.setAction("TAKEN");
         assertEquals(0, service.confirm(1L, 2L, request));
@@ -153,7 +153,7 @@ class CurrentProgressRegressionTest {
         when(tasks.selectOne(any(Wrapper.class))).thenReturn(task);
         ReminderService service = new ReminderService(tasks, records, mock(PlanMapper.class),
                 mock(PlanTimeMapper.class), mock(MedicineMapper.class), mock(AbnormalEventMapper.class),
-                mock(NotificationMapper.class));
+                mock(NotificationService.class));
         ConfirmRequest request = new ConfirmRequest();
         request.setAction("TAKEN");
         assertEquals(4, service.confirm(1L, 2L, request));
@@ -170,7 +170,7 @@ class CurrentProgressRegressionTest {
         when(tasks.selectOne(any(Wrapper.class))).thenReturn(task);
         ReminderService service = new ReminderService(tasks, records, mock(PlanMapper.class),
                 mock(PlanTimeMapper.class), mock(MedicineMapper.class), mock(AbnormalEventMapper.class),
-                mock(NotificationMapper.class));
+                mock(NotificationService.class));
         ConfirmRequest request = new ConfirmRequest();
         request.setAction("UNKNOWN");
         assertThrows(IllegalArgumentException.class, () -> service.confirm(1L, 2L, request));

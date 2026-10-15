@@ -38,5 +38,7 @@ public class AbnormalEventVO {
     /** 家属已知晓时间 */
     private LocalDateTime acknowledgedAt;
 
+    private LocalDateTime closedAt;
+
     private LocalDateTime createTime;
 }
