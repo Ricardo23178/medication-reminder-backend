@@ -1,0 +1,8 @@
+{
+  "reviewer": "adversarial",
+  "findings": [],
+  "residual_risks": [],
+  "testing_gaps": [
+    "Cross-transaction expiry fanout versus unbind followed by same-second rebind remains unverified. ReminderService.scanExpiredTasks establishes a transaction before NotificationService.queueAbnormalEvent reads ACTIVE relations without locking them; FamilyService.unbind cancels the notification rows matched at revocation. CollaborationApiIntegrationTest.rebindingWithinSameTimestampSecondDoesNotRestoreOldNotifications is sequential in one test transaction, so it does not establish whether MySQL UPDATE JOIN/gap/event locks prevent a stale family row being inserted after cancellation. Add a deterministic interleaving with independent MySQL transactions and assert that an old-period message never becomes SENT or visible after rebinding; no failing interleaving was established in this read-only review."
+  ]
+}

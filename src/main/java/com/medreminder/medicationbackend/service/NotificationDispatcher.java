@@ -39,20 +39,17 @@ public class NotificationDispatcher {
                         service.queueAbnormalEvent(event);
                     }
                 }
-                deliver(message.getId());
+                delivery.publish(message.getId());
             } catch (RuntimeException failure) {
-                // 单条失败不阻断其他消息；数据库不可用时保留原待发送状态，下轮再取。
+                try { delivery.recordFailure(message.getId()); }
+                catch (RuntimeException bookkeepingFailure) {
+                    // 数据库完全不可用时，原待发送行仍保留，下轮恢复后继续处理。
+                    log.warn("消息失败状态暂无法记录，messageId={}", message.getId());
+                }
+                // 单条失败不阻断其他消息。
                 log.warn("消息投递暂未完成，messageId={}，原因={}", message.getId(), failure.getClass().getSimpleName());
             }
         }
     }
 
-    public void deliver(Long messageId) {
-        try {
-            delivery.publish(messageId);
-        } catch (RuntimeException failure) {
-            delivery.recordFailure(messageId);
-            throw failure;
-        }
-    }
 }

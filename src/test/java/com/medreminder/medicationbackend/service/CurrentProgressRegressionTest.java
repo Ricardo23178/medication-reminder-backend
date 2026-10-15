@@ -213,7 +213,7 @@ class CurrentProgressRegressionTest {
         relation.setScope("PLAN_STATUS");
         when(relations.selectList(any(Wrapper.class))).thenReturn(List.of(relation));
         FamilyService service = new FamilyService(relations, mock(UserMapper.class), events,
-                mock(RemindTaskMapper.class), mock(PlanMapper.class), mock(MedicineMapper.class));
+                mock(RemindTaskMapper.class), mock(PlanMapper.class), mock(MedicineMapper.class), mock(NotificationMapper.class));
         assertTrue(service.listAuthorizedAbnormalEvents(2L).isEmpty());
         verifyNoInteractions(events);
     }

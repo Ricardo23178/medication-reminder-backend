@@ -1,0 +1,1412 @@
+warning: in the working copy of 'src/main/java/com/medreminder/medicationbackend/common/GlobalExceptionHandler.java', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'src/main/java/com/medreminder/medicationbackend/mapper/NotificationMapper.java', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'src/main/java/com/medreminder/medicationbackend/service/FamilyService.java', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'src/test/java/com/medreminder/medicationbackend/service/CurrentProgressRegressionTest.java', LF will be replaced by CRLF the next time Git touches it
+diff --git a/src/main/java/com/medreminder/medicationbackend/common/GlobalExceptionHandler.java b/src/main/java/com/medreminder/medicationbackend/common/GlobalExceptionHandler.java
+index ccda426..e0d7cf4 100644
+--- a/src/main/java/com/medreminder/medicationbackend/common/GlobalExceptionHandler.java
++++ b/src/main/java/com/medreminder/medicationbackend/common/GlobalExceptionHandler.java
+@@ -1,37 +1,43 @@
+ package com.medreminder.medicationbackend.common;
+ 
+ import org.slf4j.Logger;
+ import org.slf4j.LoggerFactory;
+ import org.springframework.dao.DuplicateKeyException;
+ import org.springframework.http.converter.HttpMessageNotReadableException;
+ import org.springframework.validation.FieldError;
+ import org.springframework.web.bind.MethodArgumentNotValidException;
+ import org.springframework.web.bind.annotation.ExceptionHandler;
+ import org.springframework.web.bind.annotation.RestControllerAdvice;
++import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
+ 
+ /**
+  * 全局异常处理器 —— 让所有异常都走统一返回壳 {code, message, data}。
+  *
+  * 为什么需要它：
+  * 没有它时，@Valid 校验失败会吐 Spring Boot 默认错误页（timestamp/status/error/path），
+  * 前端就得为「业务错误」和「校验错误」写两套解析逻辑。有了它，全部收敛成 code+message。
+  *
+  * 注意：这里只改变「响应体」不改变 HTTP 状态码（一律 200），
+  * 与项目既有风格一致 —— 前端只看 body 里的 code 判断成败。
+  * 拦截器写的 401 不经过 Controller，不受这里影响。
+  */
+ @RestControllerAdvice
+ public class GlobalExceptionHandler {
+ 
+     private static final Logger log = LoggerFactory.getLogger(GlobalExceptionHandler.class);
+ 
++    @ExceptionHandler(MethodArgumentTypeMismatchException.class)
++    public Result<Void> handleParameterType(MethodArgumentTypeMismatchException e) {
++        return Result.error(Result.BAD_REQUEST, "请求参数格式不正确");
++    }
++
+     /** @Valid 参数校验失败：取第一条错误信息返回，前端提示更精准 */
+     @ExceptionHandler(MethodArgumentNotValidException.class)
+     public Result<Void> handleValidation(MethodArgumentNotValidException e) {
+         String message = e.getBindingResult().getFieldErrors().stream()
+                 .findFirst()
+                 .map(FieldError::getDefaultMessage)
+                 .orElse("参数校验不通过");
+         return Result.error(Result.BAD_REQUEST, message);
+     }
+ 
+diff --git a/src/main/java/com/medreminder/medicationbackend/config/NotificationScheduler.java b/src/main/java/com/medreminder/medicationbackend/config/NotificationScheduler.java
+new file mode 100644
+index 0000000..2fab2cd
+--- /dev/null
++++ b/src/main/java/com/medreminder/medicationbackend/config/NotificationScheduler.java
+@@ -0,0 +1,22 @@
++package com.medreminder.medicationbackend.config;
++
++import com.medreminder.medicationbackend.service.NotificationDispatcher;
++import org.slf4j.Logger;
++import org.slf4j.LoggerFactory;
++import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
++import org.springframework.scheduling.annotation.Scheduled;
++import org.springframework.stereotype.Component;
++
++@Component
++@ConditionalOnProperty(name = "notification.delivery.enabled", havingValue = "true", matchIfMissing = true)
++public class NotificationScheduler {
++    private static final Logger log = LoggerFactory.getLogger(NotificationScheduler.class);
++    private final NotificationDispatcher dispatcher;
++    public NotificationScheduler(NotificationDispatcher dispatcher) { this.dispatcher = dispatcher; }
++
++    @Scheduled(fixedDelayString = "${notification.delivery.interval-ms:30000}", initialDelay = 15000)
++    public void dispatch() {
++        try { dispatcher.dispatchPending(); }
++        catch (RuntimeException error) { log.warn("站内消息投递暂不可用，等待下轮重试", error); }
++    }
++}
+diff --git a/src/main/java/com/medreminder/medicationbackend/controller/FamilyController.java b/src/main/java/com/medreminder/medicationbackend/controller/FamilyController.java
+index ed4cfa6..c8c6ab4 100644
+--- a/src/main/java/com/medreminder/medicationbackend/controller/FamilyController.java
++++ b/src/main/java/com/medreminder/medicationbackend/controller/FamilyController.java
+@@ -72,14 +72,33 @@ public class FamilyController {
+     public Result<Void> unbind(@PathVariable Long id) {
+         boolean ok = familyService.unbind(UserContext.userId(), id);
+         if (!ok) {
+             return Result.error(403, "关系不存在、已解除或无权操作");
+         }
+         return Result.ok(null);
+     }
+ 
+     /** 家属查看被授权对象的异常事件 */
+     @GetMapping("/abnormal-events")
+-    public Result<List<AbnormalEventVO>> abnormalEvents() {
+-        return Result.ok(familyService.listAuthorizedAbnormalEvents(UserContext.userId()));
++    public Result<List<AbnormalEventVO>> abnormalEvents(
++            @RequestParam(defaultValue = "false") boolean includeClosed) {
++        return Result.ok(familyService.listAuthorizedAbnormalEvents(UserContext.userId(), includeClosed));
++    }
++
++    @PostMapping("/abnormal-events/{id}/acknowledge")
++    public Result<Void> acknowledge(@PathVariable Long id) {
++        return handleResult(familyService.handleAbnormalEvent(UserContext.userId(), id, false));
++    }
++
++    @PostMapping("/abnormal-events/{id}/close")
++    public Result<Void> close(@PathVariable Long id) {
++        return handleResult(familyService.handleAbnormalEvent(UserContext.userId(), id, true));
++    }
++
++    private Result<Void> handleResult(int code) {
++        return switch (code) {
++            case 0 -> Result.ok(null);
++            case 1 -> Result.error(403, "事件不存在或无权处理，请检查家属授权");
++            default -> Result.error(409, "事件状态已变更，请先确认知晓并刷新后重试");
++        };
+     }
+ }
+diff --git a/src/main/java/com/medreminder/medicationbackend/controller/NotificationController.java b/src/main/java/com/medreminder/medicationbackend/controller/NotificationController.java
+new file mode 100644
+index 0000000..d365390
+--- /dev/null
++++ b/src/main/java/com/medreminder/medicationbackend/controller/NotificationController.java
+@@ -0,0 +1,39 @@
++package com.medreminder.medicationbackend.controller;
++
++import com.medreminder.medicationbackend.common.Result;
++import com.medreminder.medicationbackend.common.UserContext;
++import com.medreminder.medicationbackend.service.NotificationService;
++import com.medreminder.medicationbackend.vo.NotificationPageVO;
++import com.medreminder.medicationbackend.vo.NotificationVO;
++import org.springframework.web.bind.annotation.*;
++
++@RestController
++@RequestMapping("/api/notifications")
++public class NotificationController {
++    private final NotificationService service;
++    public NotificationController(NotificationService service) { this.service = service; }
++
++    @GetMapping
++    public Result<NotificationPageVO> list(@RequestParam(defaultValue = "false") boolean unreadOnly,
++            @RequestParam(required = false) Long beforeId, @RequestParam(defaultValue = "20") int limit) {
++        return Result.ok(service.list(UserContext.userId(), unreadOnly, beforeId, limit));
++    }
++
++    @GetMapping("/unread-count")
++    public Result<Long> unreadCount() { return Result.ok(service.unreadCount(UserContext.userId())); }
++
++    @GetMapping("/{id}")
++    public Result<NotificationVO> detail(@PathVariable Long id) {
++        NotificationVO message = service.get(UserContext.userId(), id);
++        return message == null ? Result.error(403, "消息不存在或授权已失效") : Result.ok(message);
++    }
++
++    @PostMapping("/{id}/read")
++    public Result<Void> read(@PathVariable Long id) {
++        return service.read(UserContext.userId(), id) ? Result.ok(null)
++                : Result.error(403, "消息不存在或授权已失效");
++    }
++
++    @PostMapping("/read-all")
++    public Result<Integer> readAll() { return Result.ok(service.readAll(UserContext.userId())); }
++}
+diff --git a/src/main/java/com/medreminder/medicationbackend/entity/Notification.java b/src/main/java/com/medreminder/medicationbackend/entity/Notification.java
+index 44be6c2..1d2ff9e 100644
+--- a/src/main/java/com/medreminder/medicationbackend/entity/Notification.java
++++ b/src/main/java/com/medreminder/medicationbackend/entity/Notification.java
+@@ -32,21 +32,21 @@ public class Notification {
+ 
+     /** 关联业务类型：REMIND_TASK/ABNORMAL_EVENT */
+     private String bizType;
+ 
+     /** 关联业务ID（点击跳转用） */
+     private Long bizId;
+ 
+     /** 0=未读 1=已读 */
+     private Integer readFlag;
+ 
+-    /** PENDING待发送/SENT已发送/FAILED发送失败 */
++    /** PENDING待投递/SENT已发布至站内消息中心/FAILED投递失败/CANCELLED授权失效等原因取消 */
+     private String sendStatus;
+ 
+     /** 重试次数 */
+     private Integer retryCount;
+ 
+     /** 发送成功时间 */
+     private LocalDateTime sentAt;
+ 
+     private LocalDateTime createTime;
+ }
+diff --git a/src/main/java/com/medreminder/medicationbackend/mapper/NotificationMapper.java b/src/main/java/com/medreminder/medicationbackend/mapper/NotificationMapper.java
+index cf81eec..d41cc10 100644
+--- a/src/main/java/com/medreminder/medicationbackend/mapper/NotificationMapper.java
++++ b/src/main/java/com/medreminder/medicationbackend/mapper/NotificationMapper.java
+@@ -1,9 +1,50 @@
+ package com.medreminder.medicationbackend.mapper;
+ 
+ import com.baomidou.mybatisplus.core.mapper.BaseMapper;
+ import com.medreminder.medicationbackend.entity.Notification;
+ import org.apache.ibatis.annotations.Mapper;
++import org.apache.ibatis.annotations.Param;
++import org.apache.ibatis.annotations.Select;
++import org.apache.ibatis.annotations.Update;
++import java.util.List;
+ 
+ @Mapper
+ public interface NotificationMapper extends BaseMapper<Notification> {
++    // 每次读取、计数和标记已读都在 SQL 中重新校验授权；解绑后历史消息也不可访问。
++    String AUTHORIZED = "n.receiver_id = #{userId} AND "
++            + "(n.biz_type IS NULL OR n.biz_type != 'ABNORMAL_EVENT' OR EXISTS ("
++            + "SELECT 1 FROM abnormal_event e WHERE e.id = n.biz_id AND (e.user_id = #{userId} OR EXISTS ("
++            + "SELECT 1 FROM family_relation r WHERE r.owner_user_id = e.user_id "
++            + "AND r.family_user_id = #{userId} AND r.relation_status = 'ACTIVE' "
++            + "AND FIND_IN_SET('ABNORMAL_EVENT', REPLACE(r.scope, ' ', '')) > 0 "
++            + "AND NOT r.bind_time > n.create_time))))";
++
++    String VISIBLE = AUTHORIZED + " AND n.send_status = 'SENT'";
++
++    @Select("SELECT COUNT(*) FROM notification n WHERE n.id = #{id} AND " + AUTHORIZED)
++    long countAuthorized(@Param("userId") Long userId, @Param("id") Long id);
++
++    @Select({"<script>SELECT n.* FROM notification n WHERE " + VISIBLE,
++            "<if test='unreadOnly'> AND n.read_flag = 0 </if>",
++            "<if test='beforeId != null'> AND n.id &lt; #{beforeId} </if>",
++            "ORDER BY n.id DESC LIMIT #{limit}</script>"})
++    List<Notification> selectVisible(@Param("userId") Long userId, @Param("unreadOnly") boolean unreadOnly,
++                                     @Param("beforeId") Long beforeId, @Param("limit") int limit);
++
++    @Select("SELECT n.* FROM notification n WHERE n.id = #{id} AND " + VISIBLE)
++    Notification selectVisibleById(@Param("userId") Long userId, @Param("id") Long id);
++
++    @Select("SELECT COUNT(*) FROM notification n WHERE n.read_flag = 0 AND " + VISIBLE)
++    long countVisibleUnread(@Param("userId") Long userId);
++
++    @Update("UPDATE notification n SET n.read_flag = 1 WHERE n.id = #{id} AND " + VISIBLE)
++    int markVisibleRead(@Param("userId") Long userId, @Param("id") Long id);
++
++    @Update("UPDATE notification n SET n.read_flag = 1 WHERE n.read_flag = 0 AND " + VISIBLE)
++    int markAllVisibleRead(@Param("userId") Long userId);
++
++    @Update("UPDATE notification n JOIN abnormal_event e ON e.id = n.biz_id "
++            + "SET n.send_status = 'CANCELLED' WHERE n.biz_type = 'ABNORMAL_EVENT' "
++            + "AND n.receiver_id = #{familyId} AND e.user_id = #{ownerId}")
++    int revokeFamilyMessages(@Param("ownerId") Long ownerId, @Param("familyId") Long familyId);
+ }
+diff --git a/src/main/java/com/medreminder/medicationbackend/service/FamilyService.java b/src/main/java/com/medreminder/medicationbackend/service/FamilyService.java
+index b72f569..ef6117c 100644
+--- a/src/main/java/com/medreminder/medicationbackend/service/FamilyService.java
++++ b/src/main/java/com/medreminder/medicationbackend/service/FamilyService.java
+@@ -6,20 +6,21 @@ import com.medreminder.medicationbackend.dto.AcceptInviteRequest;
+ import com.medreminder.medicationbackend.dto.InviteRequest;
+ import com.medreminder.medicationbackend.entity.AbnormalEvent;
+ import com.medreminder.medicationbackend.entity.FamilyRelation;
+ import com.medreminder.medicationbackend.entity.MedicationPlan;
+ import com.medreminder.medicationbackend.entity.Medicine;
+ import com.medreminder.medicationbackend.entity.RemindTask;
+ import com.medreminder.medicationbackend.entity.User;
+ import com.medreminder.medicationbackend.mapper.AbnormalEventMapper;
+ import com.medreminder.medicationbackend.mapper.FamilyRelationMapper;
+ import com.medreminder.medicationbackend.mapper.MedicineMapper;
++import com.medreminder.medicationbackend.mapper.NotificationMapper;
+ import com.medreminder.medicationbackend.mapper.PlanMapper;
+ import com.medreminder.medicationbackend.mapper.RemindTaskMapper;
+ import com.medreminder.medicationbackend.mapper.UserMapper;
+ import com.medreminder.medicationbackend.vo.AbnormalEventVO;
+ import com.medreminder.medicationbackend.vo.FamilyRelationVO;
+ import org.springframework.dao.DuplicateKeyException;
+ import org.springframework.stereotype.Service;
+ import org.springframework.transaction.annotation.Transactional;
+ 
+ import java.security.SecureRandom;
+@@ -52,33 +53,36 @@ public class FamilyService {
+     private static final String CODE_CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789";
+     private static final int CODE_LENGTH = 8;
+     private static final SecureRandom RANDOM = new SecureRandom();
+ 
+     private final FamilyRelationMapper relationMapper;
+     private final UserMapper userMapper;
+     private final AbnormalEventMapper eventMapper;
+     private final RemindTaskMapper taskMapper;
+     private final PlanMapper planMapper;
+     private final MedicineMapper medicineMapper;
++    private final NotificationMapper notificationMapper;
+ 
+     public FamilyService(FamilyRelationMapper relationMapper,
+                          UserMapper userMapper,
+                          AbnormalEventMapper eventMapper,
+                          RemindTaskMapper taskMapper,
+                          PlanMapper planMapper,
+-                         MedicineMapper medicineMapper) {
++                         MedicineMapper medicineMapper,
++                         NotificationMapper notificationMapper) {
+         this.relationMapper = relationMapper;
+         this.userMapper = userMapper;
+         this.eventMapper = eventMapper;
+         this.taskMapper = taskMapper;
+         this.planMapper = planMapper;
+         this.medicineMapper = medicineMapper;
++        this.notificationMapper = notificationMapper;
+     }
+ 
+     // ==================== 邀请与接受 ====================
+ 
+     /**
+      * 发起绑定邀请（owner 调用）。
+      * 生成邀请码 + 落一条 PENDING 关系；返回邀请码给 owner 分享给家属。
+      * 同一对 owner-family 若已存在关系，则复用旧记录刷新邀请码（避免唯一键冲突 + 重复记录）。
+      */
+     @Transactional
+@@ -207,82 +211,126 @@ public class FamilyService {
+     }
+ 
+     // ==================== 解绑 ====================
+ 
+     /**
+      * 解除关系（owner 单方发起）。ACTIVE/PENDING → REVOKED。
+      * 解绑后立即停止后续协同数据访问（异常查询按 ACTIVE 过滤，天然失效）。
+      */
+     @Transactional
+     public boolean unbind(Long ownerUserId, Long relationId) {
+-        FamilyRelation rel = relationMapper.selectById(relationId);
++        FamilyRelation rel = relationMapper.selectOne(new LambdaQueryWrapper<FamilyRelation>()
++                .eq(FamilyRelation::getId, relationId)
++                .eq(FamilyRelation::getOwnerUserId, ownerUserId).last("FOR UPDATE"));
+         if (rel == null || !rel.getOwnerUserId().equals(ownerUserId)) {
+             return false;
+         }
+         if ("REVOKED".equals(rel.getRelationStatus())) {
+             return false;
+         }
+ 
++        if (rel.getFamilyUserId() != null) {
++            // 用状态永久撤销旧消息，避免同一秒内重绑突破DATETIME精度的时间比较。
++            notificationMapper.revokeFamilyMessages(ownerUserId, rel.getFamilyUserId());
++        }
++
+         // 释放唯一键：把 family_user_id 置空，允许日后同一对重新绑定。
+         // 注意不能用 updateById（MyBatis-Plus 默认跳过 null 字段），必须用 wrapper 显式 set null。
+         relationMapper.update(null, new LambdaUpdateWrapper<FamilyRelation>()
+                 .eq(FamilyRelation::getId, relationId)
+                 .set(FamilyRelation::getRelationStatus, "REVOKED")
+                 .set(FamilyRelation::getFamilyUserId, null)
+                 .set(FamilyRelation::getUnbindTime, LocalDateTime.now())
+                 .set(FamilyRelation::getInviteCode, null)
+                 .set(FamilyRelation::getInviteExpireAt, null));
+         return true;
+     }
+ 
+     // ==================== 异常事件（家属视角） ====================
+ 
+     /**
+      * 家属查看「被授权对象」的异常事件。
+      * 越权核心：先查当前用户（作为 family）名下所有 ACTIVE 关系，拿到 owner 列表，
+      * 再查这些 owner 的异常事件 —— 解绑后关系不再是 ACTIVE，自然查不到，权限即时失效。
+      */
+     public List<AbnormalEventVO> listAuthorizedAbnormalEvents(Long familyUserId) {
++        return listAuthorizedAbnormalEvents(familyUserId, false);
++    }
++
++    public List<AbnormalEventVO> listAuthorizedAbnormalEvents(Long familyUserId, boolean includeClosed) {
+         // 1) 查我是家属、且关系生效中的 owner 列表
+         List<FamilyRelation> actives = relationMapper.selectList(
+                 new LambdaQueryWrapper<FamilyRelation>()
+                         .eq(FamilyRelation::getFamilyUserId, familyUserId)
+                         .eq(FamilyRelation::getRelationStatus, "ACTIVE"));
+ 
+         if (actives.isEmpty()) {
+             return new ArrayList<>();
+         }
+ 
+         List<Long> ownerIds = actives.stream()
+-                .filter(rel -> rel.getScope() != null && Arrays.stream(rel.getScope().split(","))
+-                        .map(String::trim).anyMatch("ABNORMAL_EVENT"::equals))
++                .filter(rel -> hasAbnormalScope(rel.getScope()))
+                 .map(FamilyRelation::getOwnerUserId)
+                 .distinct()
+                 .toList();
+         if (ownerIds.isEmpty()) {
+             return new ArrayList<>();
+         }
+ 
+         // 2) 查这些 owner 的异常事件（未关闭的优先）
+         List<AbnormalEvent> events = eventMapper.selectList(
+                 new LambdaQueryWrapper<AbnormalEvent>()
+                         .in(AbnormalEvent::getUserId, ownerIds)
+-                        .ne(AbnormalEvent::getStatus, "CLOSED")
++                        .ne(!includeClosed, AbnormalEvent::getStatus, "CLOSED")
+                         .orderByDesc(AbnormalEvent::getOccurredAt));
+ 
+         List<AbnormalEventVO> result = new ArrayList<>();
+         for (AbnormalEvent e : events) {
+             result.add(toEventVO(e));
+         }
+         return result;
+     }
+ 
++    public static boolean hasAbnormalScope(String scope) {
++        return scope != null && Arrays.stream(scope.split(",")).map(String::trim)
++                .anyMatch("ABNORMAL_EVENT"::equals);
++    }
++
++    /** 返回0成功、1无授权、2状态不允许。先锁关系，再锁事件，与解绑操作串行化。 */
++    @Transactional
++    public int handleAbnormalEvent(Long familyUserId, Long eventId, boolean close) {
++        AbnormalEvent candidate = eventMapper.selectById(eventId);
++        if (candidate == null) return 1;
++        FamilyRelation relation = relationMapper.selectOne(new LambdaQueryWrapper<FamilyRelation>()
++                .eq(FamilyRelation::getOwnerUserId, candidate.getUserId())
++                .eq(FamilyRelation::getFamilyUserId, familyUserId)
++                .eq(FamilyRelation::getRelationStatus, "ACTIVE").last("FOR UPDATE"));
++        if (relation == null || !hasAbnormalScope(relation.getScope())) return 1;
++        AbnormalEvent event = eventMapper.selectOne(new LambdaQueryWrapper<AbnormalEvent>()
++                .eq(AbnormalEvent::getId, eventId).last("FOR UPDATE"));
++        if (event == null) return 1;
++        if (close) {
++            if ("CLOSED".equals(event.getStatus())) return 0;
++            if (!"ACKNOWLEDGED".equals(event.getStatus())) return 2;
++            event.setStatus("CLOSED");
++            event.setClosedAt(LocalDateTime.now());
++        } else {
++            if ("ACKNOWLEDGED".equals(event.getStatus())) return 0;
++            if (!"OPEN".equals(event.getStatus()) && !"NOTIFIED".equals(event.getStatus())) return 2;
++            event.setStatus("ACKNOWLEDGED");
++            event.setAcknowledgedBy(familyUserId);
++            event.setAcknowledgedAt(LocalDateTime.now());
++        }
++        eventMapper.updateById(event);
++        return 0;
++    }
++
+     // ==================== 内部方法 ====================
+ 
+     /** 生成随机邀请码（8 位，去易混淆字符） */
+     private String generateInviteCode() {
+         StringBuilder sb = new StringBuilder(CODE_LENGTH);
+         for (int i = 0; i < CODE_LENGTH; i++) {
+             sb.append(CODE_CHARS.charAt(RANDOM.nextInt(CODE_CHARS.length())));
+         }
+         return sb.toString();
+     }
+@@ -314,20 +362,21 @@ public class FamilyService {
+     /** 组装异常事件 VO：补用户昵称、药品名、计划时间 */
+     private AbnormalEventVO toEventVO(AbnormalEvent e) {
+         AbnormalEventVO vo = new AbnormalEventVO();
+         vo.setId(e.getId());
+         vo.setUserId(e.getUserId());
+         vo.setTaskId(e.getTaskId());
+         vo.setType(e.getType());
+         vo.setStatus(e.getStatus());
+         vo.setOccurredAt(e.getOccurredAt());
+         vo.setAcknowledgedAt(e.getAcknowledgedAt());
++        vo.setClosedAt(e.getClosedAt());
+         vo.setCreateTime(e.getCreateTime());
+ 
+         User user = userMapper.selectById(e.getUserId());
+         vo.setUserNickname(user == null ? null : user.getNickname());
+ 
+         // 任务 → 计划 → 药品，补药品名和计划触发时间
+         RemindTask task = taskMapper.selectById(e.getTaskId());
+         if (task != null) {
+             vo.setScheduledAt(task.getScheduledAt());
+             MedicationPlan plan = planMapper.selectById(task.getPlanId());
+diff --git a/src/main/java/com/medreminder/medicationbackend/service/NotificationDeliveryService.java b/src/main/java/com/medreminder/medicationbackend/service/NotificationDeliveryService.java
+new file mode 100644
+index 0000000..d490d90
+--- /dev/null
++++ b/src/main/java/com/medreminder/medicationbackend/service/NotificationDeliveryService.java
+@@ -0,0 +1,68 @@
++package com.medreminder.medicationbackend.service;
++
++import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
++import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
++import com.medreminder.medicationbackend.entity.AbnormalEvent;
++import com.medreminder.medicationbackend.entity.Notification;
++import com.medreminder.medicationbackend.mapper.AbnormalEventMapper;
++import com.medreminder.medicationbackend.mapper.NotificationMapper;
++import org.springframework.stereotype.Service;
++import org.springframework.transaction.annotation.Transactional;
++
++import java.time.LocalDateTime;
++
++/** 每条消息在独立的服务调用事务中发布，失败后由调度器在新调用中记录重试。 */
++@Service
++public class NotificationDeliveryService {
++    public static final int MAX_ATTEMPTS = 3;
++    private final NotificationMapper notifications;
++    private final AbnormalEventMapper events;
++
++    public NotificationDeliveryService(Notificwarning: in the working copy of 'src/main/java/com/medreminder/medicationbackend/service/NotificationDispatcher.java', LF will be replaced by CRLF the next time Git touches it
+ationMapper notifications, AbnormalEventMapper events) {
++        this.notifications = notifications;
++        this.events = events;
++    }
++
++    @Transactional
++    public void publish(Long id) {
++        Notification message = lock(id);
++        if (!pending(message)) return;
++        AbnormalEvent event = "ABNORMAL_EVENT".equals(message.getBizType()) && message.getBizId() != null
++                ? events.selectById(message.getBizId()) : null;
++        boolean family = event != null && !event.getUserId().equals(message.getReceiverId());
++        if (notifications.countAuthorized(message.getReceiverId(), id) == 0
++                || (family && "CLOSED".equals(event.getStatus()))) {
++            notifications.update(null, new LambdaUpdateWrapper<Notification>()
++                    .eq(Notification::getId, id).set(Notification::getSendStatus, "CANCELLED"));
++            return;
++        }
++        LocalDateTime now = LocalDateTime.now();
++        notifications.update(null, new LambdaUpdateWrapper<Notification>()
++                .eq(Notification::getId, id).set(Notification::getSendStatus, "SENT")
++                .set(Notification::getSentAt, now));
++        if (family) {
++            events.update(null, new LambdaUpdateWrapper<AbnormalEvent>()
++                    .eq(AbnormalEvent::getId, event.getId()).eq(AbnormalEvent::getStatus, "OPEN")
++                    .set(AbnormalEvent::getStatus, "NOTIFIED").set(AbnormalEvent::getNotifiedAt, now));
++        }
++    }
++
++    @Transactional
++    public void recordFailure(Long id) {
++        Notification message = lock(id);
++        if (!pending(message)) return;
++        notifications.update(null, new LambdaUpdateWrapper<Notification>()
++                .eq(Notification::getId, id).set(Notification::getSendStatus, "FAILED")
++                .set(Notification::getRetryCount, message.getRetryCount() + 1));
++    }
++
++    private Notification lock(Long id) {
++        return notifications.selectOne(new LambdaQueryWrapper<Notification>()
++                .eq(Notification::getId, id).last("FOR UPDATE"));
++    }
++
++    private boolean pending(Notification message) {
++        return message != null && ("PENDING".equals(message.getSendStatus()) || "FAILED".equals(message.getSendStatus()))
++                && message.getRetryCount() != null && message.getRetryCount() < MAX_ATTEMPTS;
++    }
++}
+diff --git a/src/main/java/com/medreminder/medicationbackend/service/NotificationDispatcher.java b/src/main/java/com/medreminder/medicationbackend/service/NotificationDispatcher.java
+new file mode 100644
+index 0000000..97316c4
+--- /dev/null
++++ b/src/main/java/com/medreminder/medicationbackend/service/NotificationDispatcher.java
+@@ -0,0 +1,55 @@
++package com.medreminder.medicationbackend.service;
++
++import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
++import com.medreminder.medicationbackend.entity.AbnormalEvent;
++import com.medreminder.medicationbackend.entity.Notification;
++import com.medreminder.medicationbackend.mapper.AbnormalEventMapper;
++import com.medreminder.medicationbackend.mapper.NotificationMapper;
++import org.slf4j.Logger;
++import org.slf4j.LoggerFactory;
++import org.springframework.stereotype.Service;
++
++/** SENT仅表示已发布到站内消息中心，不表示设备收到系统推送或家属已读。 */
++@Service
++public class NotificationDispatcher {
++    private static final Logger log = LoggerFactory.getLogger(NotificationDispatcher.class);
++    private final NotificationMapper notifications;
++    private final AbnormalEventMapper events;
++    private final NotificationService service;
++    private final NotificationDeliveryService delivery;
++
++    public NotificationDispatcher(NotificationMapper notifications, AbnormalEventMapper events,
++                                  NotificationService service, NotificationDeliveryService delivery) {
++        this.notifications = notifications;
++        this.events = events;
++        this.service = service;
++        this.delivery = delivery;
++    }
++
++    public void dispatchPending() {
++        for (Notification warning: in the working copy of 'src/main/java/com/medreminder/medicationbackend/service/NotificationService.java', LF will be replaced by CRLF the next time Git touches it
+message : notifications.selectList(new LambdaQueryWrapper<Notification>()
++                .in(Notification::getSendStatus, "PENDING", "FAILED")
++                .lt(Notification::getRetryCount, NotificationDeliveryService.MAX_ATTEMPTS)
++                .orderByAsc(Notification::getId).last("LIMIT 100"))) {
++            try {
++                // 兼容上一阶段只有本人待发送消息的存量数据；家属资格按事件发生时刻检查。
++                if ("ABNORMAL_EVENT".equals(message.getBizType()) && message.getBizId() != null) {
++                    AbnormalEvent event = events.selectById(message.getBizId());
++                    if (event != null && event.getUserId().equals(message.getReceiverId())) {
++                        service.queueAbnormalEvent(event);
++                    }
++                }
++                delivery.publish(message.getId());
++            } catch (RuntimeException failure) {
++                try { delivery.recordFailure(message.getId()); }
++                catch (RuntimeException bookkeepingFailure) {
++                    // 数据库完全不可用时，原待发送行仍保留，下轮恢复后继续处理。
++                    log.warn("消息失败状态暂无法记录，messageId={}", message.getId());
++                }
++                // 单条失败不阻断其他消息。
++                log.warn("消息投递暂未完成，messageId={}，原因={}", message.getId(), failure.getClass().getSimpleName());
++            }
++        }
++    }
++
++}
+diff --git a/src/main/java/com/medreminder/medicationbackend/service/NotificationService.java b/src/main/java/com/medreminder/medicationbackend/service/NotificationService.java
+new file mode 100644
+index 0000000..d02007f
+--- /dev/null
++++ b/src/main/java/com/medreminder/medicationbackend/service/NotificationService.java
+@@ -0,0 +1,128 @@
++package com.medreminder.medicationbackend.service;
++
++import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
++import com.medreminder.medicationbackend.entity.AbnormalEvent;
++import com.medreminder.medicationbackend.entity.FamilyRelation;
++import com.medreminder.medicationbackend.entity.Notification;
++import com.medreminder.medicationbackend.mapper.AbnormalEventMapper;
++import com.medreminder.medicationbackend.mapper.FamilyRelationMapper;
++import com.medreminder.medicationbackend.mapper.NotificationMapper;
++import com.medreminder.medicationbackend.vo.NotificationPageVO;
++import com.medreminder.medicationbackend.vo.NotificationVO;
++import org.springframework.stereotype.Service;
++import org.springframework.transaction.annotation.Transactional;
++
++import java.time.LocalDateTime;
++import java.util.HashSet;
++import java.util.List;
++import java.util.Map;
++import java.util.Set;
++import java.util.function.Function;
++import java.util.stream.Collectors;
++
++@Service
++public class NotificationService {
++    private final NotificationMapper notifications;
++    private final AbnormalEventMapper events;
++    private final FamilyRelationMapper relations;
++
++    public NotificationService(NotificationMapper notifications, AbnormalEventMapper events,
++                               FamilyRelationMapper relations) {
++        this.notifications = notifications;
++        this.events = events;
++        this.relations = relations;
++    }
++
++    /** 与异常事件同事务入队；锁定事件串行化，避免重复扫描产生重复家属消息。 */
++    @Transactional
++    public void queueAbnormalEvent(AbnormalEvent source) {
++        AbnormalEvent event = events.selectOne(new LambdaQueryWrapper<AbnormalEvent>()
++                .eq(AbnormalEvent::getId, source.getId()).last("FOR UPDATE"));
++        if (event == null || "CLOSED".equals(event.getStatus())) return;
++        Set<Long> receivers = new HashSet<>();
++        for (Notification existing : notifications.selectList(new LambdaQueryWrapper<Notification>()
++                .select(Notification::getReceiverId)
++                .eq(Notification::getBizType, "ABNORMAL_EVENT").eq(Notification::getBizId, event.getId()))) {
++            receivers.add(existing.getReceiverId());
++        }
++        if (receivers.add(event.getUserId())) create(event, event.getUserId(), false);
++        for (FamilyRelation relation : relations.selectList(new LambdaQueryWrapper<FamilyRelation>()
++                .eq(FamilyRelation::getOwnerUserId, event.getUserId())
++                .eq(FamilyRelation::getRelationStatus, "ACTIVE"))) {
++            // 新绑定不补发绑定前的历史告警，也不向未授予异常权限的家属投递。
++            if (relation.getFamilyUserId() != null && FamilyService.hasAbnormalScope(relation.getScope())
++                    && relation.getBindTime() != null && !relation.getBindTime().isAfter(event.getOccurredAt())
++                    && receivers.add(relation.getFamilyUserId())) {
++                create(event, relation.getFamilyUserId(), true);
++            }
++        }
++    }
++
++    public NotificationPageVO list(Long userId, boolean unreadOnly, Long beforeId, int limit) {
++        if (limit < 1 || limit > 50 || (beforeId != null && beforeId < 1)) {
++            throw new IllegalArgumentException("每页数量应为1至50，消息游标必须为正数");
++        }
++        List<Notification> rows = notifications.selectVisible(userId, unreadOnly, beforeId, limit + 1);
++        boolean hasMore = rows.size() > limit;
++        List<Notification> page = rows.stream().limit(limit).toList();
++        List<Long> eventIds = page.stream().filter(n -> "ABNORMAL_EVENT".equals(n.getBizType()))
++                .map(Notification::getBizId).filter(java.util.Objects::nonNull).distinct().toList();
++        Map<Long, AbnormalEvent> pageEvents = eventIds.isEmpty() ? Map.of() : events.selectList(
++                new LambdaQueryWrapper<AbnormalEvent>().select(AbnormalEvent::getId, AbnormalEvent::getUserId)
++                        .in(AbnormalEvent::getId, eventIds)).stream()
++                .collect(Collectors.toMap(AbnormalEvent::getId, Function.identity()));
++        List<NotificationVO> items = page.stream().map(n -> toVO(userId, n,
++                n.getBizId() == null ? null : pageEvents.get(n.getBizId()))).toList();
++        Long next = hasMore ? items.get(items.size() - 1).getId() : null;
++        return new NotificationPageVO(items, notifications.countVisibleUnread(userId), next, hasMore);
++    }
++
++    public long unreadCount(Long userId) { return notifications.countVisibleUnread(userId); }
++
++    public NotificationVO get(Long userId, Long id) {
++        Notification message = notifications.selectVisibleById(userId, id);
++        if (message == null) return null;
++        AbnormalEvent event = "ABNORMAL_EVENT".equals(message.getBizType()) && message.getBizId() != null
++                ? events.selectById(message.getBizId()) : null;
++        return toVO(userId, message, event);
++    }
++
++    public boolean read(Long userId, Long id) {
++        // MySQL 默认返回匹配行数，已读消息重试仍成功；权限条件与查询完全一致。
++        return notifications.markVisibleRead(userId, id) > 0
++                || notifications.selectVisibleById(userId, id) != null;
++    }
++
++    public int readAll(Long userId) { return notifications.markAllVisibleRead(userId); }
++
++    private void create(AbnormalEvent event, Long receiver, boolean family) {
++        Notification message = new Notification();
++        message.setReceiverId(receiver);
++        message.setType(family ? "FAMILY_ALERT" : "SYSTEM");
++        message.setTitle(family ? "家属用药未确认提醒" : "用药未确认提醒");
++        message.setContent(family ? "您关注的家人有用药提醒超时未确认，请查看授权范围内的异常事件。"
++                : "您有用药提醒超时未确认，系统已记录异常。这不代表医学意义上的漏服。");
++        message.setBizType("ABNORMAL_EVENT");
++        message.setBizId(event.getId());
++        message.setReadFlag(0);
++        message.setSendStatus("PENDING");
++        message.setRetryCount(0);
++        message.setCreateTime(LocalDateTime.now());
++        notifications.insert(message);
++    }
++
++    private NotificationVO toVO(Long userId, Notification message, AbnormalEvent event) {
++        NotificationVO result = new NotificationVO();
++        result.setId(message.getId());
++        result.setType(message.getType());
++        result.setTitle(message.getTitle());
++        result.setContent(message.getContent());
++        result.setBizType(message.getBizType());
++        result.setBizId(message.getBizId());
++        result.setReadFlag(message.getReadFlag());
++        result.setCreateTime(message.getCreateTime());
++        result.setFamilyEvent("ABNORMAL_EVENT".equals(message.getBizType())
++                && event != null && !event.getUserId().equals(userId));
++        return result;
++    }
++}
+diff --git a/src/main/java/com/medreminder/medicationbackend/service/ReminderService.java b/src/main/java/com/medreminder/medicationbackend/service/ReminderService.java
+index eb157d4..4827d08 100644
+--- a/src/main/java/com/medreminder/medicationbackend/service/ReminderService.java
++++ b/src/main/java/com/medreminder/medicationbackend/service/ReminderService.java
+@@ -1,26 +1,24 @@
+ package com.medreminder.medicationbackend.service;
+ 
+ import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+ import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
+ import com.medreminder.medicationbackend.dto.ConfirmRequest;
+ import com.medreminder.medicationbackend.entity.AbnormalEvent;
+ import com.medreminder.medicationbackend.entity.MedicationPlan;
+ import com.medreminder.medicationbackend.entity.MedicationRecord;
+ import com.medreminder.medicationbackend.entity.Medicine;
+-import com.medreminder.medicationbackend.entity.Notification;
+ import com.medreminder.medicationbackend.entity.PlanTime;
+ import com.medreminder.medicationbackend.entity.RemindTask;
+ import com.medreminder.medicationbackend.mapper.AbnormalEventMapper;
+ import com.medreminder.medicationbackend.mapper.MedicationRecordMapper;
+ import com.medreminder.medicationbackend.mapper.MedicineMapper;
+-import com.medreminder.medicationbackend.mapper.NotificationMapper;
+ import com.medreminder.medicationbackend.mapper.PlanMapper;
+ import com.medreminder.medicationbackend.mapper.PlanTimeMapper;
+ import com.medreminder.medicationbackend.mapper.RemindTaskMapper;
+ import com.medreminder.medicationbackend.vo.RemindTaskVO;
+ import org.springframework.dao.DuplicateKeyException;
+ import org.springframework.stereotype.Service;
+ import org.springframework.transaction.annotation.Transactional;
+ 
+ import java.time.LocalDate;
+ import java.time.LocalDateTime;
+@@ -46,36 +44,36 @@ public class ReminderService {
+ 
+     /** 服药确认的容忍窗口：任务 scheduled_at 之后多少分钟内确认仍算「正常确认」 */
+     private static final int CONFIRM_WINDOW_MINUTES = 120;
+ 
+     private final RemindTaskMapper remindTaskMapper;
+     private final MedicationRecordMapper recordMapper;
+     private final PlanMapper planMapper;
+     private final PlanTimeMapper planTimeMapper;
+     private final MedicineMapper medicineMapper;
+     private final AbnormalEventMapper abnormalEventMapper;
+-    private final NotificationMapper notificationMapper;
++    private final NotificationService notificationService;
+ 
+     public ReminderService(RemindTaskMapper remindTaskMapper,
+                            MedicationRecordMapper recordMapper,
+                            PlanMapper planMapper,
+                            PlanTimeMapper planTimeMapper,
+                            MedicineMapper medicineMapper,
+                            AbnormalEventMapper abnormalEventMapper,
+-                           NotificationMapper notificationMapper) {
++                           NotificationService notificationService) {
+         this.remindTaskMapper = remindTaskMapper;
+         this.recordMapper = recordMapper;
+         this.planMapper = planMapper;
+         this.planTimeMapper = planTimeMapper;
+         this.medicineMapper = medicineMapper;
+         this.abnormalEventMapper = abnormalEventMapper;
+-        this.notificationMapper = notificationMapper;
++        this.notificwarning: in the working copy of 'src/test/java/com/medreminder/medicationbackend/CollaborationApiIntegrationTest.java', LF will be replaced by CRLF the next time Git touches it
+ationService = notificationService;
+     }
+ 
+     /**
+      * 查当天提醒清单（含药品名）。
+      * 查询前先「按需生成」当天任务，保证患者打开 App 就能看到今天该吃什么。
+      */
+     @Transactional
+     public List<RemindTaskVO> listToday(Long userId) {
+         ensureTodayTasks(userId);
+ 
+@@ -274,33 +272,22 @@ public class ReminderService {
+             event.setType("UNCONFIRMED_TIMEOUT");
+             event.setStatus("OPEN");
+             event.setOccurredAt(task.getExpireAt());
+             try {
+                 abnormalEventMapper.insert(event);
+             } catch (DuplicateKeyException e) {
+                 // 已存在同类异常，跳过
+                 continue;
+             }
+ 
+-            // 3) 给患者生成一条告警通知记录（家属协同的「通知」落点）
+-            Notification notif = new Notification();
+-            notif.setReceiverId(task.getUserId());
+-            notif.setType("FAMILY_ALERT");
+-            notif.setTitle("用药未确认提醒");
+-            notif.setContent("您有用药提醒超时未确认，系统已记录异常。");
+-            notif.setBizType("ABNORMAL_EVENT");
+-            notif.setBizId(event.getId());
+-            notif.setReadFlag(0);
+-            notif.setSendStatus("PENDING");
+-            notif.setRetryCount(0);
+-            notif.setCreateTime(now);
+-            notificationMapper.insert(notif);
++            // 与事件同事务入队，包含本人以及事件发生时已授权的家属。
++            notificationService.queueAbnormalEvent(event);
+         }
+     }
+ 
+     // ==================== 内部方法 ====================
+ 
+     /**
+      * 按需生成当天任务。
+      * 只处理「今天在计划起止日期范围内、状态 ACTIVE」的计划；
+      * 每个启用时间点生成一条 remind_task（若尚未生成）。
+      * 幂等：uk_plantime_scheduled 唯一键，重复生成命中冲突即忽略。
+diff --git a/src/main/java/com/medreminder/medicationbackend/vo/AbnormalEventVO.java b/src/main/java/com/medreminder/medicationbackend/vo/AbnormalEventVO.java
+index d36313d..a13f1e3 100644
+--- a/src/main/java/com/medreminder/medicationbackend/vo/AbnormalEventVO.java
++++ b/src/main/java/com/medreminder/medicationbackend/vo/AbnormalEventVO.java
+@@ -31,12 +31,14 @@ public class AbnormalEventVO {
+ 
+     /** 药品名（方便家属识别） */
+     private String medicineName;
+ 
+     /** 计划触发时间 */
+     private LocalDateTime scheduledAt;
+ 
+     /** 家属已知晓时间 */
+     private LocalDateTime acknowledgedAt;
+ 
++    private LocalDateTime closedAt;
++
+     private LocalDateTime createTime;
+ }
+diff --git a/src/main/java/com/medreminder/medicationbackend/vo/NotificationPageVO.java b/src/main/java/com/medreminder/medicationbackend/vo/NotificationPageVO.java
+new file mode 100644
+index 0000000..029193f
+--- /dev/null
++++ b/src/main/java/com/medreminder/medicationbackend/vo/NotificationPageVO.java
+@@ -0,0 +1,6 @@
++package com.medreminder.medicationbackend.vo;
++
++import java.util.List;
++
++public record NotificationPageVO(List<NotificationVO> items, long unreadCount,
++                                 Long nextBeforeId, boolean hasMore) {}
+diff --git a/src/main/java/com/medreminder/medicationbackend/vo/NotificationVO.java b/src/main/java/com/medreminder/medicationbackend/vo/NotificationVO.java
+new file mode 100644
+index 0000000..6145f90
+--- /dev/null
++++ b/src/main/java/com/medreminder/medicationbackend/vo/NotificationVO.java
+@@ -0,0 +1,18 @@
++package com.medreminder.medicationbackend.vo;
++
++import lombok.Data;
++import java.time.LocalDateTime;
++
++/** 只向客户端提供已发布消息；重试信息留在服务端。 */
++@Data
++public class NotificationVO {
++    private Long id;
++    private String type;
++    private String title;
++    private String content;
++    private String bizType;
++    private Long bizId;
++    private Integer readFlag;
++    private LocalDateTime createTime;
++    private boolean familyEvent;
++}
+diff --git a/src/test/java/com/medreminder/medicationbackend/CollaborationApiIntegrationTest.java b/src/test/java/com/medreminder/medicationbackend/CollaborationApiIntegrationTest.java
+new file mode 100644
+index 0000000..6007ae4
+--- /dev/null
++++ b/src/test/java/com/medreminder/medicationbackend/CollaborationApiIntegrationTest.java
+@@ -0,0 +1,319 @@
++package com.medreminder.medicationbackend;
++
++import com.medreminder.medicationbackend.entity.*;
++import com.medreminder.medicationbackend.mapper.*;
++import com.medreminder.medicationbackend.util.JwtUtil;
++import com.medreminder.medicationbackend.service.NotificationService;
++import com.medreminder.medicationbackend.service.NotificationDeliveryService;
++import org.junit.jupiter.api.Test;
++import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
++import org.springframework.beans.factory.annotation.Autowired;
++import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
++import org.springframework.boot.test.context.SpringBootTest;
++import org.springframework.transaction.annotation.Transactional;
++import org.springframework.test.web.servlet.MockMvc;
++
++import java.time.LocalDate;
++import java.time.LocalDateTime;
++import java.util.UUID;
++
++import static org.junit.jupiter.api.Assertions.*;
++import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.*;
++import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
++
++/** Opt-in real MySQL verification. Every fixture and API write rolls back with its test. */
++@EnabledIfEnvironmentVariable(named = "RUN_MYSQL_INTEGRATION_TESTS", matches = "true")
++@SpringBootTest(properties = {"reminder.scheduling.enabled=false", "notification.delivery.enabled=false",
++        "app.initialize-admin=false"})
++@AutoConfigureMockMvc
++@Transactional
++class CollaborationApiIntegrationTest {
++    @Autowired MockMvc mvc;
++    @Autowired JwtUtil jwt;
++    @Autowired UserMapper users;
++    @Autowired NotificationMapper notifications;
++    @Autowired AbnormalEventMapper events;
++    @Autowired FamilyRelationMapper relations;
++    @Autowired MedicineMapper medicines;
++    @Autowired PlanMapper plans;
++    @Autowired PlanTimeMapper times;
++    @Autowired RemindTaskMapper tasks;
++    @Autowired NotificationService inbox;
++    @Autowired NotificationDeliveryService delivery;
++
++    @Test
++    void eventFanoutIsIdempotentAndExcludesLateOrInsufficientGrants() {
++        Long owner = user(), family = user(), planOnly = user(), late = user();
++        AbnormalEvent event = event(owner);
++        relation(owner, family, "PLAN_STATUS,ABNORMAL_EVENT");
++        relation(owner, planOnly, "PLAN_STATUS");
++        FamilyRelation lateRelation = relation(owner, late, "ABNORMAL_EVENT");
++        lateRelation.setBindTime(LocalDateTime.now());
++        relations.updateById(lateRelation);
++        inbox.queueAbnormalEvent(event);
++        inbox.queueAbnormalEvent(event);
++        var messages = notifications.selectList(new com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper<Notification>()
++                .eq(Notification::getBizType, "ABNORMAL_EVENT").eq(Notification::getBizId, event.getId()));
++        assertEquals(2, messages.size());
++        assertEquals(java.util.Set.of(owner, family), messages.stream().map(Notification::getReceiverId)
++                .collect(java.util.stream.Collectors.toSet()));
++        assertTrue(messages.stream().allMatch(n -> "PENDING".equals(n.getSendStatus())));
++    }
++
++    @Test
++    void publicationMarksNotifiedOnlyForFamilyAndNeverRewindsAcknowledgement() throws Exception {
++        Long owner = user(), family = user();
++        AbnormalEvent event = event(owner);
++        relation(owner, family, "ABNORMAL_EVENT");
++        Notification own = message(owner, "PENDING", event.getId());
++        Notification familyMessage = message(family, "PENDING", event.getId());
++        delivery.publish(own.getId());
++        assertEquals("OPEN", events.selectById(event.getId()).getStatus());
++        delivery.publish(familyMessage.getId());
++        assertEquals("NOTIFIED", events.selectById(event.getId()).getStatus());
++        assertNotNull(events.selectById(event.getId()).getNotifiedAt());
++        delivery.publish(familyMessage.getId());
++        assertEquals("SENT", notifications.selectById(familyMessage.getId()).getSendStatus());
++        assertNotNull(notifications.selectById(familyMessage.getId()).getSentAt());
++        mvc.perform(get("/api/notifications").header("Authorization", token(family)))
++                .andExpect(jsonPath("$.data.items[0].familyEvent").value(true));
++        event.setStatus("ACKNOWLEDGED");
++        events.updateById(event);
++        Notification another = message(family, "PENDING", event.getId());
++        delivery.publish(another.getId());
++        assertEquals("ACKNOWLEDGED", events.selectById(event.getId()).getStatus());
++    }
++
++    @Test
++    void failedPublicationIsBoundedAndCanRecoverBeforeLimit() {
++        Long receiver = user();
++        Notification exhausted = message(receiver, "PENDING", null);
++        for (int attempt = 0; attempt < 5; attempt++) delivery.recordFailure(exhausted.getId());
++        assertEquals(3, notifications.selectById(exhausted.getId()).getRetryCount());
++        delivery.publish(exhausted.getId());
++        assertEquals("FAILED", notifications.selectById(exhausted.getId()).getSendStatus());
++        Notification recovered = message(receiver, "PENDING", null);
++        delivery.recordFailure(recovered.getId());
++        delivery.publish(recovered.getId());
++        assertEquals("SENT", notifications.selectById(recovered.getId()).getSendStatus());
++        assertEquals(1, notifications.selectById(recovered.getId()).getRetryCount());
++    }
++
++    @Test
++    void revokedPendingFamilyNotificationIsCancelled() {
++        Long owner = user(), family = user();
++        AbnormalEvent event = event(owner);
++        FamilyRelation relation = relation(owner, family, "ABNORMAL_EVENT");
++        Notification message = message(family, "PENDING", event.getId());
++        relation.setRelationStatus("REVOKED");
++        relations.updateById(relation);
++        delivery.publish(message.getId());
++        assertEquals("CANCELLED", notifications.selectById(message.getId()).getSendStatus());
++        assertEquals("OPEN", events.selectById(event.getId()).getStatus());
++    }
++
++    @Test
++    void rebindingWithinSameTimestampSecondDoesNotRestoreOldNotifications() throws Exception {
++        Long owner = user(), family = user();
++        AbnormalEvent event = event(owner);
++        FamilyRelation old = relation(owner, family, "ABNORMAL_EVENT");
++        Notification message = message(family, "SENT", event.getId());
++        mvc.perform(delete("/api/family/relations/{id}", old.getId()).header("Authorization", token(owner)))
++                .andExpect(jsonPath("$.code").value(200));
++        FamilyRelation rebound = relation(owner, family, "ABNORMAL_EVENT");
++        rebound.setBindTime(message.getCreateTime().truncatedTo(java.time.temporal.ChronoUnit.SECONDS));
++        relations.updateById(rebound);
++        mvc.perform(get("/api/notifications/{id}", message.getId()).header("Authorization", token(family)))
++                .andExpect(jsonPath("$.code").value(403));
++        assertEquals("CANCELLED", notifications.selectById(message.getId()).getSendStatus());
++    }
++
++    @Test
++    void inboxShowsOnlyPublishedOwnMessagesAndSupportsUnreadAndCursor() throws Exception {
++        Long me = user(), other = user();
++        Notification first = message(me, "SENT", null);
++        Notification second = message(me, "SENT", null);
++        message(me, "PENDING", null);
++        message(other, "SENT", null);
++        mvc.perform(get("/api/notifications").param("limit", "1").header("Authorization", token(me)))
++                .andExpect(status().isOk()).andExpect(jsonPath("$.code").value(200))
++                .andExpect(jsonPath("$.data.items.length()").value(1))
++                .andExpect(jsonPath("$.data.items[0].id").value(second.getId()))
++                .andExpect(jsonPath("$.data.hasMore").value(true))
++                .andExpect(jsonPath("$.data.unreadCount").value(2));
++        mvc.perform(get("/api/notifications").param("beforeId", second.getId().toString())
++                        .header("Authorization", token(me)))
++                .andExpect(jsonPath("$.data.items[0].id").value(first.getId()));
++    }
++
++    @Test
++    void readingIsIdempotentAndCannotReadAnotherUsersMessage() throws Exception {
++        Long me = user(), other = user();
++        Notification mine = message(me, "SENT", null), theirs = message(other, "SENT", null);
++        for (int attempt = 0; attempt < 2; attempt++) {
++            mvc.perform(post("/api/notifications/{id}/read", mine.getId()).header("Authorization", token(me)))
++                    .andExpect(jsonPath("$.code").value(200));
++        }
++        mvc.perform(post("/api/notifications/{id}/read", theirs.getId()).header("Authorization", token(me)))
++                .andExpect(jsonPath("$.code").value(403));
++        assertEquals(1, notifications.selectById(mine.getId()).getReadFlag());
++        assertEquals(0, notifications.selectById(theirs.getId()).getReadFlag());
++        mvc.perform(get("/api/notifications").param("unreadOnly", "true").header("Authorization", token(me)))
++                .andExpect(jsonPath("$.data.items.length()").value(0));
++    }
++
++    @Test
++    void readAllDoesNotModifyOtherUsersOrUnpublishedMessages() throws Exception {
++        Long me = user(), other = user();
++        Notification mine = message(me, "SENT", null), pending = message(me, "PENDING", null);
++        Notification theirs = message(other, "SENT", null);
++        mvc.perform(post("/api/notifications/read-all").header("Authorization", token(me)))
++                .andExpect(jsonPath("$.code").value(200));
++        assertEquals(1, notifications.selectById(mine.getId()).getReadFlag());
++        assertEquals(0, notifications.selectById(pending.getId()).getReadFlag());
++        assertEquals(0, notifications.selectById(theirs.getId()).getReadFlag());
++    }
++
++    @Test
++    void revocationHidesPreviouslyPublishedFamilyMessagesAndRejectsActions() throws Exception {
++        Long owner = user(), family = user();
++        AbnormalEvent event = event(owner);
++        FamilyRelation relation = relation(owner, family, "ABNORMAL_EVENT");
++        Notification notification = message(family, "SENT", event.getId());
++        mvc.perform(get("/api/notifications/{id}", notification.getId()).header("Authorization", token(family)))
++                .andExpect(jsonPath("$.code").value(200));
++        mvc.perform(delete("/api/family/relations/{id}", relation.getId()).header("Authorization", token(owner)))
++                .andExpect(jsonPath("$.code").value(200));
++        mvc.perform(get("/api/notifications").header("Authorization", token(family)))
++                .andExpect(jsonPath("$.data.items.length()").value(0))
++                .andExpect(jsonPath("$.data.unreadCount").value(0));
++        mvc.perform(get("/api/notifications/{id}", notification.getId()).header("Authorization", token(family)))
++                .andExpect(jsonPath("$.code").value(403));
++        mvc.perform(post("/api/family/abnormal-events/{id}/acknowledge", event.getId())
++                        .header("Authorization", token(family)))
++                .andExpect(jsonPath("$.code").value(403));
++    }
++
++    @Test
++    void acknowledgeAndClosePreserveFirstActorAndDoNotChangeMedicationStatus() throws Exception {
++        Long owner = user(), family = user(), secondFamily = user();
++        AbnormalEvent event = event(owner);
++        relation(owner, family, "ABNORMAL_EVENT");
++        relation(owner, secondFamily, "ABNORMAL_EVENT");
++        mvc.perform(post("/api/family/abnormal-events/{id}/close", event.getId()).header("Authorization", token(family)))
++                .andExpect(jsonPath("$.code").value(409));
++        for (Long actor : new Long[]{family, secondFamily}) {
++            mvc.perform(post("/api/family/abnormal-events/{id}/acknowledge", event.getId())
++                            .header("Authorization", token(actor)))
++                    .andExpect(jsonPath("$.code").value(200));
++        }
++        assertEquals(family, events.selectById(event.getId()).getAcknowledgedBy());
++        for (int attempt = 0; attempt < 2; attempt++) {
++            mvc.perform(post("/api/family/abnormal-events/{id}/close", event.getId()).header("Authorization", token(family)))
++                    .andExpect(jsonPath("$.code").value(200));
++        }
++        assertEquals("CLOSED", events.selectById(event.getId()).getStatus());
++        assertNotNull(events.selectById(event.getId()).getClosedAt());
++        assertEquals("EXPIRED", tasks.selectById(event.getTaskId()).getStatus());
++        mvc.perform(get("/api/family/abnormal-events").header("Authorization", token(family)))
++                .andExpect(jsonPath("$.data.length()").value(0));
++        mvc.perform(get("/api/family/abnormal-events").param("includeClosed", "true")
++                        .header("Authorization", token(family)))
++                .andExpect(jsonPath("$.data[0].status").value("CLOSED"));
++    }
++
++    @Test
++    void planOnlyGrantDoesNotAuthorizeNotificationsOrAcknowledgement() throws Exception {
++        Long owner = user(), family = user();
++        AbnormalEvent event = event(owner);
++        relation(owner, family, "PLAN_STATUS");
++        message(family, "SENT", event.getId());
++        mvc.perform(get("/api/notifications").header("Authorization", token(family)))
++                .andExpect(jsonPath("$.data.unreadCount").value(0));
++        mvc.perform(post("/api/family/abnormal-events/{id}/acknowledge", event.getId())
++                        .header("Authorization", token(family)))
++                .andExpect(jsonPath("$.code").value(403));
++    }
++
++    @Test
++    void newEndpointsRequireAuthenticationAndRejectUnboundedPageSizes() throws Exception {
++        mvc.perform(get("/api/notifications")).andExpect(status().isUnauthorized());
++        mvc.perform(post("/api/notifications/read-all")).andExpect(status().isUnauthorized());
++        mvc.perform(get("/api/notifications").param("limit", "501").header("Authorization", token(user())))
++                .andExpect(jsonPath("$.code").value(400));
++        mvc.perform(get("/api/notifications/not-a-number").header("Authorization", token(user())))
++                .andExpect(jsonPath("$.code").value(400));
++    }
++
++    Long user() {
++        User user = new User();
++        user.setAccount("it_" + UUID.randomUUID().toString().substring(0, 24));
++        user.setNickname("集成测试");
++        user.setPasswordHash("test-only-not-a-login-password");
++        user.setRole("USER");
++        user.setStatus(1);
++        users.insert(user);
++        return user.getId();
++    }
++
++    String token(Long userId) { return "Bearer " + jwt.generate(userId, "USER"); }
++
++    Notification message(Long receiver, String status, Long eventId) {
++        Notification notification = new Notification();
++        notification.setReceiverId(receiver);
++        notification.setType(eventId == null ? "SYSTEM" : "FAMILY_ALERT");
++        notification.setTitle("测试消息");
++        notification.setContent("测试正文");
++        notification.setBizType(eventId == null ? null : "ABNORMAL_EVENT");
++        notification.setBizId(eventId);
++        notification.setReadFlag(0);
++        notification.setSendStatus(status);
++        notification.setRetryCount(0);
++        notification.setCreateTime(LocalDateTime.now());
++        notifications.insert(notification);
++        return notification;
++    }
++
++    FamilyRelation relation(Long owner, Long family, String scope) {
++        FamilyRelation relation = new FamilyRelation();
++        relation.setOwnerUserId(owner);
++        relation.setFamilyUserId(family);
++        relation.setRelationStatus("ACTIVE");
++        relation.setScope(scope);
++        relation.setBindTime(LocalDateTime.now().minusDays(2));
++        relations.insert(relation);
++        return relation;
++    }
++
++    AbnormalEvent event(Long owner) {
++        Medicine medicine = new Medicine();
++        medicine.setUserId(owner);
++        medicine.setName("测试药品");
++        medicines.insert(medicine);
++        MedicationPlan plan = new MedicationPlan();
++        plan.setUserId(owner);
++        plan.setMedicineId(medicine.getId());
++        plan.setStartDate(LocalDate.now().minusDays(1));
++        plans.insert(plan);
++        PlanTime time = new PlanTime();
++        time.setPlanId(plan.getId());
++        time.setRemindTime(java.time.LocalTime.NOON);
++        times.insert(time);
++        RemindTask task = new RemindTask();
++        task.setUserId(owner);
++        task.setPlanId(plan.getId());
++        task.setPlanTimeId(time.getId());
++        task.setScheduledAt(LocalDateTime.now().minusHours(4));
++        task.setExpireAt(LocalDateTime.now().minusHours(2));
++        task.setStatus("EXPIRED");
++        tasks.insert(task);
++        AbnormalEvent event = new AbnormalEvent();
++        event.setUserId(owner);
++        event.setTaskId(task.getId());
++        event.setType("UNCONFIRMED_TIMEOUT");
++        event.setStatus("OPEN");
++        event.setOccurredAt(task.getExpireAt());
++        events.insert(event);
++        return event;
++    }
++}
+diff --git a/src/test/java/com/medreminder/medicationbackend/MedicationBackendApplicationTests.java b/src/test/java/com/medreminder/medicationbackend/MedicationBackendApplicationTests.java
+index d0b19cb..852d4aa 100644
+--- a/src/test/java/com/medreminder/medicationbackend/MedicationBackendApplicationTests.java
++++ b/src/test/java/com/medreminder/medicationbackend/MedicationBackendApplicationTests.java
+@@ -3,21 +3,21 @@ package com.medreminder.medicationbackend;
+ import org.junit.jupiter.api.Test;
+ import org.springframework.boot.test.context.SpringBootTest;
+ import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
+ import org.springframework.beans.factory.annotation.Autowired;
+ import org.springframework.test.web.servlet.MockMvc;
+ import com.medreminder.medicationbackend.util.JwtUtil;
+ import java.util.List;
+ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.*;
+ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
+ 
+-@SpringBootTest(properties = {"reminder.scheduling.enabled=false", "app.initialize-admin=false"})
++@SpringBootTest(properties = {"reminder.scheduling.enabled=false", "notification.delivery.enabled=false", "app.initialize-admin=false"})
+ @AutoConfigureMockMvc
+ class MedicationBackendApplicationTests {
+     @Autowired
+     MockMvc mvc;
+     @Autowired
+     JwtUtil jwt;
+ 
+     @Test
+     void contextLoads() {
+     }
+diff --git a/src/test/java/com/medreminder/medicationbackend/service/CurrentProgressRegressionTest.java b/src/test/java/com/medreminder/medicationbackend/service/CurrentProgressRegressionTest.java
+index abe5d3f..af1b759 100644
+--- a/src/test/java/com/medreminder/medicationbackend/service/CurrentProgressRegressionTest.java
++++ b/src/test/java/com/medreminder/medicationbackend/service/CurrentProgressRegressionTest.java
+@@ -53,47 +53,47 @@ class CurrentProgressRegressionTest {
+         verify(tasks).update(isNull(), argThat((Wrapper<RemindTask> wrapper) ->
+                 wrapper.getSqlSegment().contains("scheduled_at >=")
+                         && wrapper.getSqlSegment().contains("scheduled_at <")));
+     }
+ 
+     @Test
+     void todayQueryIncludesOpenReminderFromPreviousDay() {
+         RemindTaskMapper tasks = mock(RemindTaskMapper.class);
+         ReminderService service = new ReminderService(tasks, mock(MedicationRecordMapper.class),
+                 mock(PlanMapper.class), mock(PlanTimeMapper.class), mock(MedicineMapper.class),
+-                mock(AbnormalEventMapper.class), mock(NotificationMapper.class));
++                mock(AbnormalEventMapper.class), mock(NotificationService.class));
+         service.listToday(1L);
+         verify(tasks).selectList(argThat((Wrapper<RemindTask> wrapper) ->
+                 wrapper.getSqlSegment().contains(" OR ") && wrapper.getSqlSegment().contains("expire_at >=")
+                         && wrapper.getSqlSegment().contains("status IN")));
+     }
+ 
+     @Test
+     void repeatedExpiryScanProducesOneEventAndOneNotification() {
+         RemindTaskMapper tasks = mock(RemindTaskMapper.class);
+         MedicationRecordMapper records = mock(MedicationRecordMapper.class);
+         AbnormalEventMapper events = mock(AbnormalEventMapper.class);
+-        NotificationMapper notifications = mock(NotificationMapper.class);
++        NotificationService notifications = mock(NotificationService.class);
+         RemindTask task = new RemindTask();
+         task.setId(2L);
+         task.setUserId(1L);
+         task.setExpireAt(LocalDateTime.now().minusMinutes(1));
+         when(tasks.selectList(any(Wrapper.class))).thenReturn(List.of(task));
+         when(tasks.update(isNull(), any(Wrapper.class))).thenReturn(1, 0);
+         doAnswer(call -> { ((AbnormalEvent) call.getArgument(0)).setId(5L); return 1; })
+                 .when(events).insert(any(AbnormalEvent.class));
+         ReminderService service = new ReminderService(tasks, records, mock(PlanMapper.class),
+                 mock(PlanTimeMapper.class), mock(MedicineMapper.class), events, notifications);
+         service.scanExpiredTasks();
+         service.scanExpiredTasks();
+         verify(events, times(1)).insert(any(AbnormalEvent.class));
+-        verify(notifications, times(1)).insert(argThat((Notification n) -> n.getBizId().equals(5L)));
++        verify(notifications, times(1)).queueAbnormalEvent(argThat((AbnormalEvent e) -> e.getId().equals(5L)));
+         verify(records, times(1)).insert(argThat((MedicationRecord r) -> "UNCONFIRMED".equals(r.getAction())));
+     }
+     @BeforeAll
+     static void initializeMapperMetadata() {
+         MybatisConfiguration configuration = new MybatisConfiguration();
+         for (Class<?> entity : List.of(RemindTask.class, MedicationPlan.class, PlanTime.class,
+                 FamilyRelation.class, MedicationRecord.class, AbnormalEvent.class)) {
+             MapperBuilderAssistant assistant = new MapperBuilderAssistant(configuration, "test");
+             assistant.setCurrentNamespace(entity.getName());
+             TableInfoHelper.initTableInfo(assistant, entity);
+@@ -103,21 +103,21 @@ class CurrentProgressRegressionTest {
+     void delayedResponseKeepsTaskOpenForLaterConfirmation() {
+         RemindTaskMapper tasks = mock(RemindTaskMapper.class);
+         MedicationRecordMapper records = mock(MedicationRecordMapper.class);
+         RemindTask task = new RemindTask();
+         task.setStatus("WAITING");
+         task.setExpireAt(LocalDateTime.now().plusHours(1));
+         when(tasks.selectOne(any(Wrapper.class))).thenReturn(task);
+         when(tasks.update(isNull(), any(Wrapper.class))).thenReturn(1);
+         ReminderService service = new ReminderService(tasks, records, mock(PlanMapper.class),
+                 mock(PlanTimeMapper.class), mock(MedicineMapper.class), mock(AbnormalEventMapper.class),
+-                mock(NotificationMapper.class));
++                mock(NotificationService.class));
+         ConfirmRequest request = new ConfirmRequest();
+         request.setAction("DELAYED");
+         request.setDelayMinutes(15);
+         assertEquals(0, service.confirm(1L, 2L, request));
+         assertEquals("TRIGGERED", task.getStatus());
+         verify(tasks).update(isNull(), argThat((Wrapper<RemindTask> wrapper) ->
+                 wrapper.getSqlSet().contains("expire_at=") && wrapper.getSqlSet().contains("last_trigger_at=")));
+     }
+ 
+     @Test
+@@ -128,56 +128,56 @@ class CurrentProgressRegressionTest {
+         task.setStatus("TRIGGERED");
+         task.setExpireAt(LocalDateTime.now().plusHours(1));
+         MedicationRecord record = new MedicationRecord();
+         record.setId(10L);
+         record.setAction("DELAYED");
+         when(tasks.selectOne(any(Wrapper.class))).thenReturn(task);
+         when(tasks.update(isNull(), any(Wrapper.class))).thenReturn(1);
+         when(records.selectOne(any(Wrapper.class))).thenReturn(record);
+         ReminderService service = new ReminderService(tasks, records, mock(PlanMapper.class),
+                 mock(PlanTimeMapper.class), mock(MedicineMapper.class), mock(AbnormalEventMapper.class),
+-                mock(NotificationMapper.class));
++                mock(NotificationService.class));
+         ConfirmRequest request = new ConfirmRequest();
+         request.setAction("TAKEN");
+         assertEquals(0, service.confirm(1L, 2L, request));
+         verify(records).updateById(record);
+         verify(records, never()).insert(any(MedicationRecord.class));
+         assertEquals("TAKEN", record.getAction());
+     }
+     @Test
+     void cancelledTaskCannotBeConfirmed() {
+         RemindTaskMapper tasks = mock(RemindTaskMapper.class);
+         MedicationRecordMapper records = mock(MedicationRecordMapper.class);
+         RemindTask task = new RemindTask();
+         task.setStatus("CANCELLED");
+         task.setExpireAt(LocalDateTime.now().plusHours(1));
+         when(tasks.selectOne(any(Wrapper.class))).thenReturn(task);
+         ReminderService service = new ReminderService(tasks, records, mock(PlanMapper.class),
+                 mock(PlanTimeMapper.class), mock(MedicineMapper.class), mock(AbnormalEventMapper.class),
+-                mock(NotificationMapper.class));
++                mock(NotificationService.class));
+         ConfirmRequest request = new ConfirmRequest();
+         request.setAction("TAKEN");
+         assertEquals(4, service.confirm(1L, 2L, request));
+         verifyNoInteractions(records);
+     }
+ 
+     @Test
+     void invalidActionMustNotBecomeTaken() {
+         RemindTaskMapper tasks = mock(RemindTaskMapper.class);
+         MedicationRecordMapper records = mock(MedicationRecordMapper.class);
+         RemindTask task = new RemindTask();
+         task.setStatus("WAITING");
+         task.setExpireAt(LocalDateTime.now().plusHours(1));
+         when(tasks.selectOne(any(Wrapper.class))).thenReturn(task);
+         ReminderService service = new ReminderService(tasks, records, mock(PlanMapper.class),
+                 mock(PlanTimeMapper.class), mock(MedicineMapper.class), mock(AbnormalEventMapper.class),
+-                mock(NotificationMapper.class));
++                mock(NotificationService.class));
+         ConfirmRequest request = new ConfirmRequest();
+         request.setAction("UNKNOWN");
+         assertThrows(IllegalArgumentException.class, () -> service.confirm(1L, 2L, request));
+         verifyNoInteractions(records);
+     }
+ 
+     @Test
+     void updatingPlanCannotUseAnotherUsersMedicine() {
+         PlanMapper plans = mock(PlanMapper.class);
+         MedicineMapper medicines = mock(MedicineMapper.class);
+@@ -206,21 +206,21 @@ class CurrentProgressRegressionTest {
+ 
+     @Test
+     void familyWithOnlyPlanScopeCannotReadAbnormalEvents() {
+         FamilyRelationMapper relations = mock(FamilyRelationMapper.class);
+         AbnormalEventMapper events = mock(AbnormalEventMapper.class);
+         FamilyRelation relation = new FamilyRelation();
+         relation.setOwnerUserId(1L);
+         relation.setScope("PLAN_STATUS");
+         when(relations.selectList(any(Wrapper.class))).thenReturn(List.of(relation));
+         FamilyService service = new FamilyService(relations, mock(UserMapper.class), events,
+-                mock(RemindTaskMapper.class), mock(PlanMapper.class), mock(MedicineMapper.class));
++                mock(RemindTaskMapper.class), mock(PlanMapper.class), mock(MedicineMapper.class), mock(NotificationMapper.class));
+         assertTrue(service.listAuthorizedAbnormalEvents(2L).isEmpty());
+         verifyNoInteractions(events);
+     }
+ 
+     @Test
+     void midnightConfirmationBelongsToScheduledDayAndCancelledTasksDoNotCount() {
+         RemindTaskMapper tasks = mock(RemindTaskMapper.class);
+         MedicationRecordMapper records = mock(MedicationRecordMapper.class);
+         LocalDate day = LocalDate.of(2026, 10, 13);
+         RemindTask task = new RemindTask();
+

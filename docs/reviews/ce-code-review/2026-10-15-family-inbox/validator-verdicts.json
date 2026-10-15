@@ -1,0 +1,19 @@
+{
+  "verdicts": [
+    {
+      "#": 1,
+      "validated": false,
+      "reason": "The frontend lifecycle script exercises a successful detail GET followed by a 403 read POST and asserts that the message body remains absent while the error appears."
+    },
+    {
+      "#": 2,
+      "validated": true,
+      "reason": "Reopening either @Entry page creates a new instance that can load stale data before the earlier instance’s POST completes, and the earlier callback is discarded without refreshing the new instance."
+    },
+    {
+      "#": 3,
+      "validated": true,
+      "reason": "The delivery service cancels a pending family message when its event is CLOSED, but the integration tests publish only before closure or after revocation and never exercise closure before publication."
+    }
+  ]
+}

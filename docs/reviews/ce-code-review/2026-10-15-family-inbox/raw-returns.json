@@ -1,0 +1,106 @@
+[
+  {
+    "reviewer": "security",
+    "findings": [],
+    "residual_risks": [],
+    "testing_gaps": [
+      "CollaborationApiIntegrationTest covers sequential revocation and same-second rebinding, but not concurrent unbind with publication or acknowledge/close. The new relation, notification and event locking interactions therefore lack real-MySQL concurrency coverage for the immediate-revocation contract."
+    ]
+  },
+  {
+    "reviewer": "correctness",
+    "findings": [],
+    "residual_risks": [],
+    "testing_gaps": [
+      "The MySQL fixtures use a single test transaction and do not cover simultaneous independent queueAbnormalEvent calls or cross-transaction deduplication.",
+      "No supplied frontend test covers navigation or filter changes during pending requests, where generation guards must prevent stale authorization data from reappearing."
+    ]
+  },
+  {
+    "reviewer": "testing",
+    "findings": [
+      {
+        "title": "Cover closure before family alert publication",
+        "severity": "P2",
+        "file": "src/main/java/com/medreminder/medicationbackend/service/NotificationDeliveryService.java",
+        "line": 34,
+        "confidence": 75,
+        "autofix_class": "gated_auto",
+        "owner": "downstream-resolver",
+        "requires_verification": true,
+        "pre_existing": false,
+        "suggested_fix": "Add a real-MySQL integration case that creates an authorized pending family notification, acknowledges and closes the event before publish, invokes delivery.publish, then asserts CANCELLED, no sentAt, and a still-CLOSED event.",
+        "first_evidence": "src/main/java/com/medreminder/medicationbackend/service/NotificationDeliveryService.java:34 --                 || (family && \"CLOSED\".equals(event.getStatus()))) {"
+      },
+      {
+        "title": "Exercise authorization loss between detail requests",
+        "severity": "P2",
+        "file": "entry/src/main/ets/pages/NotificationDetail.ets",
+        "line": 55,
+        "confidence": 75,
+        "autofix_class": "gated_auto",
+        "owner": "downstream-resolver",
+        "requires_verification": true,
+        "pre_existing": false,
+        "suggested_fix": "Add a page-level test with controlled GET and POST responses: resolve GET with a family message, return 403 from read, and assert the body remains absent while the authorization error appears; include a successful two-request case.",
+        "first_evidence": "entry/src/main/ets/pages/NotificationDetail.ets:55 --       const readResult = parseSimpleResult(await HttpUtil.post('/api/notifications/' + this.messageId + '/read'));"
+      }
+    ],
+    "residual_risks": [],
+    "testing_gaps": []
+  },
+  {
+    "reviewer": "adversarial",
+    "findings": [],
+    "residual_risks": [],
+    "testing_gaps": [
+      "Expiry fanout concurrent with unbind and same-second rebind needs independent-transaction MySQL verification. Existing rebind coverage is sequential within one test transaction; whether UPDATE JOIN/gap/event locks prevent stale family notification insertion after cancellation remains unresolved. No failing interleaving was established."
+    ]
+  },
+  {
+    "reviewer": "performance",
+    "findings": [],
+    "residual_risks": [],
+    "testing_gaps": []
+  },
+  {
+    "reviewer": "julik-frontend-races",
+    "findings": [
+      {
+        "title": "Re-entering during a pending action can leave stale inbox state",
+        "severity": "P2",
+        "file": "entry/src/main/ets/pages/Notifications.ets",
+        "line": 30,
+        "confidence": 75,
+        "autofix_class": "gated_auto",
+        "owner": "downstream-resolver",
+        "requires_verification": true,
+        "pre_existing": false,
+        "suggested_fix": "Track in-flight read-all and family-event mutation promises independently of page generation. On page show, wait for a pending mutation before loading, or trigger a fresh load after that mutation settles if the page is visible; preserve generation checks for stale response rendering.",
+        "first_evidence": "entry/src/main/ets/pages/Notifications.ets:30 --     this.readingAll = false;"
+      }
+    ],
+    "residual_risks": [],
+    "testing_gaps": []
+  },
+  {
+    "reviewer": "reliability",
+    "findings": [],
+    "residual_risks": [],
+    "testing_gaps": [
+      "The transactional MySQL integration tests and mocked dispatcher tests do not exercise a real publication rollback followed by failure bookkeeping in a separate committed transaction."
+    ]
+  },
+  {
+    "reviewer": "api-contract",
+    "findings": [],
+    "residual_risks": [],
+    "testing_gaps": []
+  },
+  {
+    "reviewer": "maintainability",
+    "findings": [],
+    "residual_risks": [],
+    "testing_gaps": []
+  }
+]

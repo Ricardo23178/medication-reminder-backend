@@ -1,0 +1,294 @@
+{
+  "status": "complete",
+  "verdict": "Ready with fixes",
+  "scope": {
+    "base": "backend:327f6bc; frontend:1c00b4e",
+    "branch": "optimize/current-progress",
+    "head_sha": "53ac6fc664eb9ad7fafd3946ef056608598f6d84",
+    "pr_url": null,
+    "files_changed": 27,
+    "checkouts": [
+      {
+        "path": "D:/HuaweiMoveData/Users/86186/Desktop/毕业设计/medication-backend",
+        "base": "327f6bc",
+        "head_sha": "53ac6fc664eb9ad7fafd3946ef056608598f6d84",
+        "files_changed": 19
+      },
+      {
+        "path": "D:/GraduationProject/MedicationReminder",
+        "base": "1c00b4e",
+        "head_sha": "1c00b4ed51c3783ae8b69e4d4536217f4edbdc2e",
+        "files_changed": 8
+      }
+    ],
+    "untracked_included": true
+  },
+  "intent": "Deliver durable anomaly/outbox fanout and an in-app family inbox with live authorization, finite retry, deduplication and read state. Preserve event acknowledgement/closure metadata and medication records; support the authorized family lifecycle and safe asynchronous UI navigation.",
+  "intent_confidence": "explicit",
+  "reviewers": [
+    "correctness",
+    "security",
+    "testing",
+    "maintainability",
+    "performance",
+    "api-contract",
+    "reliability",
+    "julik-frontend-races",
+    "adversarial"
+  ],
+  "findings": [
+    {
+      "#": 2,
+      "autofix_class": "gated_auto",
+      "confidence": 75,
+      "file": "entry/src/main/ets/pages/Notifications.ets",
+      "first_evidence": "entry/src/main/ets/pages/Notifications.ets:30 --     this.readingAll = false;",
+      "independent_reviewers": [
+        "julik-frontend-races"
+      ],
+      "line": 30,
+      "owner": "downstream-resolver",
+      "pre_existing": false,
+      "requires_verification": true,
+      "reviewers": [
+        "julik-frontend-races"
+      ],
+      "severity": "P2",
+      "suggested_fix": "Track pending collaboration POST promises in a shared module. Before inbox, family-event, detail or unread-count GETs, await outstanding writes and then recheck visibility/generation; preserve body clearing and live authorization.",
+      "title": "Re-entering during a pending action can leave stale inbox state",
+      "why_it_matters": "After tapping 全部已读, a user can return to 我的 and reopen the inbox before the POST finishes. The new list request may read the old unread state; when the POST later succeeds, its callback is discarded by the generation check, so the inbox keeps showing unread messages and count until another refresh. The same sequence after acknowledging or closing a family event can leave its old action button visible. Keep mutation completion separate from render cancellation and refresh the current page when an older mutation settles.",
+      "evidence": [
+        "entry/src/main/ets/pages/Notifications.ets:30 --     this.readingAll = false;",
+        "entry/src/main/ets/pages/Notifications.ets:90-91 -- const result = parseSimpleResult(await HttpUtil.post('/api/notifications/read-all')); / if (!this.visible || ticket !== this.generation) return;",
+        "entry/src/main/ets/pages/Notifications.ets:90 -- const result = parseSimpleResult(await HttpUtil.post('/api/notifications/read-all'));",
+        "entry/src/main/ets/pages/Notifications.ets:91 -- if (!this.visible || ticket !== this.generation) return;",
+        "entry/src/main/ets/pages/Notifications.ets:21-24 -- onPageShow() { / this.visible = true; / this.load(false);",
+        "entry/src/main/ets/pages/FamilyAbnormal.ets:25-30 -- onPageHide() { / this.visible = false; / this.generation++; / this.loading = false; / this.busyId = 0; / this.eventList = [];",
+        "entry/src/main/ets/pages/FamilyAbnormal.ets:83-85 -- const result = parseSimpleResult(await HttpUtil.post('/api/family/abnormal-events/' + event.id + / (close ? '/close' : '/acknowledge'))); / if (!this.visible || ticket !== this.generation) return;"
+      ]
+    },
+    {
+      "#": 3,
+      "autofix_class": "gated_auto",
+      "confidence": 75,
+      "file": "src/main/java/com/medreminder/medicationbackend/service/NotificationDeliveryService.java",
+      "first_evidence": "src/main/java/com/medreminder/medicationbackend/service/NotificationDeliveryService.java:34 --                 || (family && \"CLOSED\".equals(event.getStatus()))) {",
+      "independent_reviewers": [
+        "testing"
+      ],
+      "line": 34,
+      "owner": "downstream-resolver",
+      "pre_existing": false,
+      "requires_verification": true,
+      "reviewers": [
+        "testing"
+      ],
+      "severity": "P2",
+      "suggested_fix": "Add a real-MySQL integration case that creates an authorized pending family notification, acknowledges and closes the event before publish, invokes delivery.publish, then asserts CANCELLED, no sentAt, and a still-CLOSED event.",
+      "title": "Cover closure before family alert publication",
+      "why_it_matters": "If a family member acknowledges and closes an event while its alert is still pending, the later dispatch must cancel the alert. The new CLOSED branch implements that behavior, but the integration tests only cancel pending alerts after revocation and only close events after separate publication. A regression here could publish a stale alert for an already finished collaboration.",
+      "evidence": [
+        "src/main/java/com/medreminder/medicationbackend/service/NotificationDeliveryService.java:34 --                 || (family && \"CLOSED\".equals(event.getStatus()))) {",
+        "src/test/java/com/medreminder/medicationbackend/CollaborationApiIntegrationTest.java:103 --     void revokedPendingFamilyNotificationIsCancelled() {",
+        "src/test/java/com/medreminder/medicationbackend/CollaborationApiIntegrationTest.java:198 --     void acknowledgeAndClosePreserveFirstActorAndDoNotChangeMedicationStatus() throws Exception {"
+      ]
+    }
+  ],
+  "actionable_findings": [
+    {
+      "#": 2,
+      "autofix_class": "gated_auto",
+      "confidence": 75,
+      "file": "entry/src/main/ets/pages/Notifications.ets",
+      "first_evidence": "entry/src/main/ets/pages/Notifications.ets:30 --     this.readingAll = false;",
+      "independent_reviewers": [
+        "julik-frontend-races"
+      ],
+      "line": 30,
+      "owner": "downstream-resolver",
+      "pre_existing": false,
+      "requires_verification": true,
+      "reviewers": [
+        "julik-frontend-races"
+      ],
+      "severity": "P2",
+      "suggested_fix": "Track pending collaboration POST promises in a shared module. Before inbox, family-event, detail or unread-count GETs, await outstanding writes and then recheck visibility/generation; preserve body clearing and live authorization.",
+      "title": "Re-entering during a pending action can leave stale inbox state",
+      "why_it_matters": "After tapping 全部已读, a user can return to 我的 and reopen the inbox before the POST finishes. The new list request may read the old unread state; when the POST later succeeds, its callback is discarded by the generation check, so the inbox keeps showing unread messages and count until another refresh. The same sequence after acknowledging or closing a family event can leave its old action button visible. Keep mutation completion separate from render cancellation and refresh the current page when an older mutation settles.",
+      "evidence": [
+        "entry/src/main/ets/pages/Notifications.ets:30 --     this.readingAll = false;",
+        "entry/src/main/ets/pages/Notifications.ets:90-91 -- const result = parseSimpleResult(await HttpUtil.post('/api/notifications/read-all')); / if (!this.visible || ticket !== this.generation) return;",
+        "entry/src/main/ets/pages/Notifications.ets:90 -- const result = parseSimpleResult(await HttpUtil.post('/api/notifications/read-all'));",
+        "entry/src/main/ets/pages/Notifications.ets:91 -- if (!this.visible || ticket !== this.generation) return;",
+        "entry/src/main/ets/pages/Notifications.ets:21-24 -- onPageShow() { / this.visible = true; / this.load(false);",
+        "entry/src/main/ets/pages/FamilyAbnormal.ets:25-30 -- onPageHide() { / this.visible = false; / this.generation++; / this.loading = false; / this.busyId = 0; / this.eventList = [];",
+        "entry/src/main/ets/pages/FamilyAbnormal.ets:83-85 -- const result = parseSimpleResult(await HttpUtil.post('/api/family/abnormal-events/' + event.id + / (close ? '/close' : '/acknowledge'))); / if (!this.visible || ticket !== this.generation) return;"
+      ]
+    },
+    {
+      "#": 3,
+      "autofix_class": "gated_auto",
+      "confidence": 75,
+      "file": "src/main/java/com/medreminder/medicationbackend/service/NotificationDeliveryService.java",
+      "first_evidence": "src/main/java/com/medreminder/medicationbackend/service/NotificationDeliveryService.java:34 --                 || (family && \"CLOSED\".equals(event.getStatus()))) {",
+      "independent_reviewers": [
+        "testing"
+      ],
+      "line": 34,
+      "owner": "downstream-resolver",
+      "pre_existing": false,
+      "requires_verification": true,
+      "reviewers": [
+        "testing"
+      ],
+      "severity": "P2",
+      "suggested_fix": "Add a real-MySQL integration case that creates an authorized pending family notification, acknowledges and closes the event before publish, invokes delivery.publish, then asserts CANCELLED, no sentAt, and a still-CLOSED event.",
+      "title": "Cover closure before family alert publication",
+      "why_it_matters": "If a family member acknowledges and closes an event while its alert is still pending, the later dispatch must cancel the alert. The new CLOSED branch implements that behavior, but the integration tests only cancel pending alerts after revocation and only close events after separate publication. A regression here could publish a stale alert for an already finished collaboration.",
+      "evidence": [
+        "src/main/java/com/medreminder/medicationbackend/service/NotificationDeliveryService.java:34 --                 || (family && \"CLOSED\".equals(event.getStatus()))) {",
+        "src/test/java/com/medreminder/medicationbackend/CollaborationApiIntegrationTest.java:103 --     void revokedPendingFamilyNotificationIsCancelled() {",
+        "src/test/java/com/medreminder/medicationbackend/CollaborationApiIntegrationTest.java:198 --     void acknowledgeAndClosePreserveFirstActorAndDoNotChangeMedicationStatus() throws Exception {"
+      ]
+    }
+  ],
+  "triage_groups": [],
+  "pre_existing_findings": [],
+  "requirements_completeness": {
+    "plan_source": "explicit",
+    "path": "docs/family-collaboration-and-inbox.md",
+    "readiness": "legacy design contract",
+    "requirements": [
+      {
+        "requirement": "Transactional anomaly and owner/eligible-family outbox with per-event receiver deduplication",
+        "status": "met"
+      },
+      {
+        "requirement": "ACTIVE plus ABNORMAL_EVENT authorization, occurrence-time queue eligibility and permanent revocation of old family messages",
+        "status": "met",
+        "limit": "Concurrent independent-transaction schedules remain untested."
+      },
+      {
+        "requirement": "In-app SENT publication, bounded batch/retries and continuation after one-message failure",
+        "status": "met"
+      },
+      {
+        "requirement": "Receiver/live-authorization SQL for list/count/detail/read/read-all and cursor limit 1..50",
+        "status": "met"
+      },
+      {
+        "requirement": "Acknowledgement then closure preserve first metadata and do not change medication records",
+        "status": "met"
+      },
+      {
+        "requirement": "Inbox entry/badge, filters/cursor/detail gating and family actions/history",
+        "status": "met",
+        "note": "Finding #2 identifies stale state after pending mutations across page instances."
+      }
+    ],
+    "implementation_units": []
+  },
+  "learnings": [],
+  "agent_native_gaps": [],
+  "deployment_notes": [],
+  "residual_risks": [],
+  "testing_gaps": [
+    "Real-MySQL fixtures cover sequential revocation/rebinding but not independent-transaction fanout versus unbind/rebind or simultaneous queue deduplication. No failing lock interleaving was established.",
+    "Mock dispatcher tests and single-transaction integration fixtures do not verify an actual publication rollback followed by failure bookkeeping in a separate committed transaction."
+  ],
+  "coverage": {
+    "review_mode": "agent; report-only",
+    "roster": "Full risk-driven roster; all nine terminal returns collected, plus targeted correctness follow-up for NotificationDetail messageId cache.",
+    "conditional_reasons": {
+      "testing": "Changed real-MySQL fixtures, dispatcher tests and asynchronous behavior.",
+      "maintainability": "829 counted backend executable changed lines and new service/UI boundaries.",
+      "security": "New public endpoints and live family authorization.",
+      "performance": "SQL authorization, pagination, event projections and fanout.",
+      "api_contract": "New consumed endpoint/response contracts.",
+      "reliability": "Background publication, transaction boundaries, bounded retries and partial failures.",
+      "julik_frontend_races": "Page generations, asynchronous reads and mutations.",
+      "adversarial": "Authorization, persistence writes, publication and ordering."
+    },
+    "project_standards": "Not run: successful search found no applicable CODING_STANDARDS.md, AGENTS.md or CLAUDE.md in either reviewed tree.",
+    "learnings": "Not selected: no matching solutions corpus or declared packs.",
+    "omitted_lenses": "Agent-native, data-migration, deployment-verification, previous-comments and Swift/iOS had no applicable surface.",
+    "scope_signals": {
+      "backend": {
+        "exec_lines": 829,
+        "uncounted_files": 0,
+        "test_files_changed": true,
+        "signals": [
+          "api"
+        ],
+        "lite_eligible": false
+      },
+      "frontend": {
+        "exec_lines": 0,
+        "uncounted_files": 5,
+        "test_files_changed": false,
+        "signals": [],
+        "lite_eligible": false
+      },
+      "note": "Frontend extensions were uncounted by the deterministic helper; full roster used. Backend helper recovered from Windows GBK decoding with PYTHONUTF8=1."
+    },
+    "cross_model": {
+      "status": "not run",
+      "reason": "Attested Codex host; no eligible different-family claude, grok or cursor-agent route available on PATH.",
+      "cross_model_route": null,
+      "model_requested": null,
+      "effort_requested": null,
+      "receipt_supported": false,
+      "model_actual": "unverified",
+      "effort_actual": "unverified",
+      "independence_verified": false,
+      "adversarial_route": "local fallback",
+      "jobs_started": 0
+    },
+    "mechanics": {
+      "malformed_returns": 0,
+      "malformed_findings": 0,
+      "suppressed_by_confidence": {},
+      "quote_gate_demotions": 0,
+      "mode_aware_demotions": 0,
+      "semantic_merges": 0,
+      "settlement_suppressions": 0
+    },
+    "validators": {
+      "batches": 1,
+      "selected": [
+        1,
+        2,
+        3
+      ],
+      "skipped_for_cross_model": 0,
+      "verdicts": [
+        {
+          "#": 1,
+          "validated": false,
+          "reason": "The frontend lifecycle script exercises a successful detail GET followed by a 403 read POST and asserts that the message body remains absent while the error appears."
+        },
+        {
+          "#": 2,
+          "validated": true,
+          "reason": "Reopening either @Entry page creates a new instance that can load stale data before the earlier instance’s POST completes, and the earlier callback is discarded without refreshing the new instance."
+        },
+        {
+          "#": 3,
+          "validated": true,
+          "reason": "The delivery service cancels a pending family message when its event is CLOSED, but the integration tests publish only before closure or after revocation and never exercise closure before publication."
+        }
+      ],
+      "dropped": 1,
+      "infrastructure_failures": 0,
+      "degraded_blockers": []
+    },
+    "scope_changes": "NotificationDetail messageId cache added during review and covered by a targeted correctness follow-up and later frontend/API/maintainability passes. Caller-created scripts/verify-inbox-lifecycle.cjs, later README/progress-document edits and future shared pending-mutation helper are outside this initial reviewed snapshot.",
+    "caller_verification": "Root reports final 33-test backend suite and HAP build green, and real-emulator inbox/family lifecycle/revocation QA. Root reproduced the detail-return failure, fixed it, then verified return and revoke-on-return denial. Root's post-scope actual-method script observed four pending-mutation failures and passed GET-success/read-403 body suppression. Review agents did not execute those tests.",
+    "failed_reviewers": [],
+    "timed_out_reviewers": [],
+    "agent_lifecycle": "Every launched reviewer and validator reached a collected terminal outcome; no release primitive is provided and no detached peer job exists.",
+    "writes": "Review artifacts only. No production/test/Git mutation by this review."
+  },
+  "artifact_path": "D:/HuaweiMoveData/Users/86186/Desktop/毕业设计/medication-backend/docs/reviews/ce-code-review/2026-10-15-family-inbox",
+  "run_id": "20261015-family-inbox-01"
+}

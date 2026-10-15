@@ -1,0 +1,9 @@
+{
+  "reviewer": "correctness",
+  "findings": [],
+  "residual_risks": [],
+  "testing_gaps": [
+    "The MySQL integration fixtures execute within a single test transaction. They do not exercise simultaneous independent queueAbnormalEvent calls, so the event-row lock's cross-transaction deduplication guarantee is not covered by the supplied tests.",
+    "No supplied frontend test exercises hide/show or filter changes while an earlier notification/detail/abnormal-event request is pending. Those concrete navigation paths rely on the new generation guards to prevent stale authorization data from reappearing."
+  ]
+}

@@ -42,4 +42,9 @@ public interface NotificationMapper extends BaseMapper<Notification> {
 
     @Update("UPDATE notification n SET n.read_flag = 1 WHERE n.read_flag = 0 AND " + VISIBLE)
     int markAllVisibleRead(@Param("userId") Long userId);
+
+    @Update("UPDATE notification n JOIN abnormal_event e ON e.id = n.biz_id "
+            + "SET n.send_status = 'CANCELLED' WHERE n.biz_type = 'ABNORMAL_EVENT' "
+            + "AND n.receiver_id = #{familyId} AND e.user_id = #{ownerId}")
+    int revokeFamilyMessages(@Param("ownerId") Long ownerId, @Param("familyId") Long familyId);
 }

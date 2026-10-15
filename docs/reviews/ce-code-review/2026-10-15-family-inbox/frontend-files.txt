@@ -1,0 +1,14 @@
+warning: in the working copy of 'entry/src/main/ets/model/Family.ets', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'entry/src/main/ets/pages/FamilyAbnormal.ets', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'entry/src/main/ets/pages/Main.ets', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'entry/src/main/ets/pages/My.ets', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'entry/src/main/resources/base/profile/main_pages.json', LF will be replaced by CRLF the next time Git touches it
+entry/src/main/ets/model/Family.ets
+entry/src/main/ets/pages/FamilyAbnormal.ets
+entry/src/main/ets/pages/Main.ets
+entry/src/main/ets/pages/My.ets
+entry/src/main/resources/base/profile/main_pages.json
+entry/src/main/ets/model/Notification.ets
+entry/src/main/ets/pages/NotificationDetail.ets
+entry/src/main/ets/pages/Notifications.ets
+

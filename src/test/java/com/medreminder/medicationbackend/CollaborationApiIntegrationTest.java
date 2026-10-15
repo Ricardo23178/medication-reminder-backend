@@ -61,7 +61,7 @@ class CollaborationApiIntegrationTest {
     }
 
     @Test
-    void publicationMarksNotifiedOnlyForFamilyAndNeverRewindsAcknowledgement() {
+    void publicationMarksNotifiedOnlyForFamilyAndNeverRewindsAcknowledgement() throws Exception {
         Long owner = user(), family = user();
         AbnormalEvent event = event(owner);
         relation(owner, family, "ABNORMAL_EVENT");
@@ -75,6 +75,8 @@ class CollaborationApiIntegrationTest {
         delivery.publish(familyMessage.getId());
         assertEquals("SENT", notifications.selectById(familyMessage.getId()).getSendStatus());
         assertNotNull(notifications.selectById(familyMessage.getId()).getSentAt());
+        mvc.perform(get("/api/notifications").header("Authorization", token(family)))
+                .andExpect(jsonPath("$.data.items[0].familyEvent").value(true));
         event.setStatus("ACKNOWLEDGED");
         events.updateById(event);
         Notification another = message(family, "PENDING", event.getId());
@@ -108,6 +110,56 @@ class CollaborationApiIntegrationTest {
         delivery.publish(message.getId());
         assertEquals("CANCELLED", notifications.selectById(message.getId()).getSendStatus());
         assertEquals("OPEN", events.selectById(event.getId()).getStatus());
+    }
+
+    @Test
+    void closingEventBeforeFamilyPublicationCancelsPendingAlert() throws Exception {
+        Long owner = user(), family = user();
+        AbnormalEvent event = event(owner);
+        relation(owner, family, "ABNORMAL_EVENT");
+        Notification message = message(family, "PENDING", event.getId());
+        mvc.perform(post("/api/family/abnormal-events/{id}/acknowledge", event.getId())
+                        .header("Authorization", token(family)))
+                .andExpect(jsonPath("$.code").value(200));
+        mvc.perform(post("/api/family/abnormal-events/{id}/close", event.getId())
+                        .header("Authorization", token(family)))
+                .andExpect(jsonPath("$.code").value(200));
+        LocalDateTime closedAt = events.selectById(event.getId()).getClosedAt();
+        assertNotNull(closedAt);
+        assertEquals("PENDING", notifications.selectById(message.getId()).getSendStatus());
+        assertEquals(1L, notifications.countAuthorized(family, message.getId()));
+
+        delivery.publish(message.getId());
+
+        Notification cancelled = notifications.selectById(message.getId());
+        assertEquals("CANCELLED", cancelled.getSendStatus());
+        assertNull(cancelled.getSentAt());
+        AbnormalEvent closed = events.selectById(event.getId());
+        assertEquals("CLOSED", closed.getStatus());
+        assertEquals(closedAt, closed.getClosedAt());
+        mvc.perform(get("/api/notifications").header("Authorization", token(family)))
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data.items.length()").value(0))
+                .andExpect(jsonPath("$.data.unreadCount").value(0));
+        mvc.perform(get("/api/notifications/unread-count").header("Authorization", token(family)))
+                .andExpect(jsonPath("$.code").value(200))
+                .andExpect(jsonPath("$.data").value(0));
+    }
+
+    @Test
+    void rebindingWithinSameTimestampSecondDoesNotRestoreOldNotifications() throws Exception {
+        Long owner = user(), family = user();
+        AbnormalEvent event = event(owner);
+        FamilyRelation old = relation(owner, family, "ABNORMAL_EVENT");
+        Notification message = message(family, "SENT", event.getId());
+        mvc.perform(delete("/api/family/relations/{id}", old.getId()).header("Authorization", token(owner)))
+                .andExpect(jsonPath("$.code").value(200));
+        FamilyRelation rebound = relation(owner, family, "ABNORMAL_EVENT");
+        rebound.setBindTime(message.getCreateTime().truncatedTo(java.time.temporal.ChronoUnit.SECONDS));
+        relations.updateById(rebound);
+        mvc.perform(get("/api/notifications/{id}", message.getId()).header("Authorization", token(family)))
+                .andExpect(jsonPath("$.code").value(403));
+        assertEquals("CANCELLED", notifications.selectById(message.getId()).getSendStatus());
     }
 
     @Test
@@ -222,6 +274,8 @@ class CollaborationApiIntegrationTest {
         mvc.perform(get("/api/notifications")).andExpect(status().isUnauthorized());
         mvc.perform(post("/api/notifications/read-all")).andExpect(status().isUnauthorized());
         mvc.perform(get("/api/notifications").param("limit", "501").header("Authorization", token(user())))
+                .andExpect(jsonPath("$.code").value(400));
+        mvc.perform(get("/api/notifications/not-a-number").header("Authorization", token(user())))
                 .andExpect(jsonPath("$.code").value(400));
     }
 

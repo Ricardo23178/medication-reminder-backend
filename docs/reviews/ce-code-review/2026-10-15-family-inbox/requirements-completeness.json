@@ -1,0 +1,34 @@
+{
+  "plan_source": "explicit",
+  "path": "docs/family-collaboration-and-inbox.md",
+  "readiness": "legacy design contract",
+  "requirements": [
+    {
+      "requirement": "Transactional anomaly and owner/eligible-family outbox with per-event receiver deduplication",
+      "status": "met"
+    },
+    {
+      "requirement": "ACTIVE plus ABNORMAL_EVENT authorization, occurrence-time queue eligibility and permanent revocation of old family messages",
+      "status": "met",
+      "limit": "Concurrent independent-transaction schedules remain untested."
+    },
+    {
+      "requirement": "In-app SENT publication, bounded batch/retries and continuation after one-message failure",
+      "status": "met"
+    },
+    {
+      "requirement": "Receiver/live-authorization SQL for list/count/detail/read/read-all and cursor limit 1..50",
+      "status": "met"
+    },
+    {
+      "requirement": "Acknowledgement then closure preserve first metadata and do not change medication records",
+      "status": "met"
+    },
+    {
+      "requirement": "Inbox entry/badge, filters/cursor/detail gating and family actions/history",
+      "status": "met",
+      "note": "Finding #2 identifies stale state after pending mutations across page instances."
+    }
+  ],
+  "implementation_units": []
+}

@@ -1,0 +1,8 @@
+{
+  "residual_risks": [],
+  "testing_gaps": [
+    "Real-MySQL fixtures cover sequential revocation/rebinding but not independent-transaction fanout versus unbind/rebind or simultaneous queue deduplication. No failing lock interleaving was established.",
+    "Mock dispatcher tests and single-transaction integration fixtures do not verify an actual publication rollback followed by failure bookkeeping in a separate committed transaction."
+  ],
+  "learnings": []
+}

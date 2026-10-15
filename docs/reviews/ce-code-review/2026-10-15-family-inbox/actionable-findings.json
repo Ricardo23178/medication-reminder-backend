@@ -1,0 +1,58 @@
+[
+  {
+    "#": 2,
+    "autofix_class": "gated_auto",
+    "confidence": 75,
+    "file": "entry/src/main/ets/pages/Notifications.ets",
+    "first_evidence": "entry/src/main/ets/pages/Notifications.ets:30 --     this.readingAll = false;",
+    "independent_reviewers": [
+      "julik-frontend-races"
+    ],
+    "line": 30,
+    "owner": "downstream-resolver",
+    "pre_existing": false,
+    "requires_verification": true,
+    "reviewers": [
+      "julik-frontend-races"
+    ],
+    "severity": "P2",
+    "suggested_fix": "Track pending collaboration POST promises in a shared module. Before inbox, family-event, detail or unread-count GETs, await outstanding writes and then recheck visibility/generation; preserve body clearing and live authorization.",
+    "title": "Re-entering during a pending action can leave stale inbox state",
+    "why_it_matters": "After tapping 全部已读, a user can return to 我的 and reopen the inbox before the POST finishes. The new list request may read the old unread state; when the POST later succeeds, its callback is discarded by the generation check, so the inbox keeps showing unread messages and count until another refresh. The same sequence after acknowledging or closing a family event can leave its old action button visible. Keep mutation completion separate from render cancellation and refresh the current page when an older mutation settles.",
+    "evidence": [
+      "entry/src/main/ets/pages/Notifications.ets:30 --     this.readingAll = false;",
+      "entry/src/main/ets/pages/Notifications.ets:90-91 -- const result = parseSimpleResult(await HttpUtil.post('/api/notifications/read-all')); / if (!this.visible || ticket !== this.generation) return;",
+      "entry/src/main/ets/pages/Notifications.ets:90 -- const result = parseSimpleResult(await HttpUtil.post('/api/notifications/read-all'));",
+      "entry/src/main/ets/pages/Notifications.ets:91 -- if (!this.visible || ticket !== this.generation) return;",
+      "entry/src/main/ets/pages/Notifications.ets:21-24 -- onPageShow() { / this.visible = true; / this.load(false);",
+      "entry/src/main/ets/pages/FamilyAbnormal.ets:25-30 -- onPageHide() { / this.visible = false; / this.generation++; / this.loading = false; / this.busyId = 0; / this.eventList = [];",
+      "entry/src/main/ets/pages/FamilyAbnormal.ets:83-85 -- const result = parseSimpleResult(await HttpUtil.post('/api/family/abnormal-events/' + event.id + / (close ? '/close' : '/acknowledge'))); / if (!this.visible || ticket !== this.generation) return;"
+    ]
+  },
+  {
+    "#": 3,
+    "autofix_class": "gated_auto",
+    "confidence": 75,
+    "file": "src/main/java/com/medreminder/medicationbackend/service/NotificationDeliveryService.java",
+    "first_evidence": "src/main/java/com/medreminder/medicationbackend/service/NotificationDeliveryService.java:34 --                 || (family && \"CLOSED\".equals(event.getStatus()))) {",
+    "independent_reviewers": [
+      "testing"
+    ],
+    "line": 34,
+    "owner": "downstream-resolver",
+    "pre_existing": false,
+    "requires_verification": true,
+    "reviewers": [
+      "testing"
+    ],
+    "severity": "P2",
+    "suggested_fix": "Add a real-MySQL integration case that creates an authorized pending family notification, acknowledges and closes the event before publish, invokes delivery.publish, then asserts CANCELLED, no sentAt, and a still-CLOSED event.",
+    "title": "Cover closure before family alert publication",
+    "why_it_matters": "If a family member acknowledges and closes an event while its alert is still pending, the later dispatch must cancel the alert. The new CLOSED branch implements that behavior, but the integration tests only cancel pending alerts after revocation and only close events after separate publication. A regression here could publish a stale alert for an already finished collaboration.",
+    "evidence": [
+      "src/main/java/com/medreminder/medicationbackend/service/NotificationDeliveryService.java:34 --                 || (family && \"CLOSED\".equals(event.getStatus()))) {",
+      "src/test/java/com/medreminder/medicationbackend/CollaborationApiIntegrationTest.java:103 --     void revokedPendingFamilyNotificationIsCancelled() {",
+      "src/test/java/com/medreminder/medicationbackend/CollaborationApiIntegrationTest.java:198 --     void acknowledgeAndClosePreserveFirstActorAndDoNotChangeMedicationStatus() throws Exception {"
+    ]
+  }
+]

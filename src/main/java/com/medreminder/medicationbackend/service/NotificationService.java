@@ -15,7 +15,10 @@ import org.springframework.transaction.annotation.Transactional;
 import java.time.LocalDateTime;
 import java.util.HashSet;
 import java.util.List;
+import java.util.Map;
 import java.util.Set;
+import java.util.function.Function;
+import java.util.stream.Collectors;
 
 @Service
 public class NotificationService {
@@ -38,6 +41,7 @@ public class NotificationService {
         if (event == null || "CLOSED".equals(event.getStatus())) return;
         Set<Long> receivers = new HashSet<>();
         for (Notification existing : notifications.selectList(new LambdaQueryWrapper<Notification>()
+                .select(Notification::getReceiverId)
                 .eq(Notification::getBizType, "ABNORMAL_EVENT").eq(Notification::getBizId, event.getId()))) {
             receivers.add(existing.getReceiverId());
         }
@@ -60,7 +64,15 @@ public class NotificationService {
         }
         List<Notification> rows = notifications.selectVisible(userId, unreadOnly, beforeId, limit + 1);
         boolean hasMore = rows.size() > limit;
-        List<NotificationVO> items = rows.stream().limit(limit).map(n -> toVO(userId, n)).toList();
+        List<Notification> page = rows.stream().limit(limit).toList();
+        List<Long> eventIds = page.stream().filter(n -> "ABNORMAL_EVENT".equals(n.getBizType()))
+                .map(Notification::getBizId).filter(java.util.Objects::nonNull).distinct().toList();
+        Map<Long, AbnormalEvent> pageEvents = eventIds.isEmpty() ? Map.of() : events.selectList(
+                new LambdaQueryWrapper<AbnormalEvent>().select(AbnormalEvent::getId, AbnormalEvent::getUserId)
+                        .in(AbnormalEvent::getId, eventIds)).stream()
+                .collect(Collectors.toMap(AbnormalEvent::getId, Function.identity()));
+        List<NotificationVO> items = page.stream().map(n -> toVO(userId, n,
+                n.getBizId() == null ? null : pageEvents.get(n.getBizId()))).toList();
         Long next = hasMore ? items.get(items.size() - 1).getId() : null;
         return new NotificationPageVO(items, notifications.countVisibleUnread(userId), next, hasMore);
     }
@@ -69,7 +81,10 @@ public class NotificationService {
 
     public NotificationVO get(Long userId, Long id) {
         Notification message = notifications.selectVisibleById(userId, id);
-        return message == null ? null : toVO(userId, message);
+        if (message == null) return null;
+        AbnormalEvent event = "ABNORMAL_EVENT".equals(message.getBizType()) && message.getBizId() != null
+                ? events.selectById(message.getBizId()) : null;
+        return toVO(userId, message, event);
     }
 
     public boolean read(Long userId, Long id) {
@@ -96,7 +111,7 @@ public class NotificationService {
         notifications.insert(message);
     }
 
-    private NotificationVO toVO(Long userId, Notification message) {
+    private NotificationVO toVO(Long userId, Notification message, AbnormalEvent event) {
         NotificationVO result = new NotificationVO();
         result.setId(message.getId());
         result.setType(message.getType());
@@ -106,10 +121,8 @@ public class NotificationService {
         result.setBizId(message.getBizId());
         result.setReadFlag(message.getReadFlag());
         result.setCreateTime(message.getCreateTime());
-        if ("ABNORMAL_EVENT".equals(message.getBizType())) {
-            AbnormalEvent event = events.selectById(message.getBizId());
-            result.setFamilyEvent(event != null && !event.getUserId().equals(userId));
-        }
+        result.setFamilyEvent("ABNORMAL_EVENT".equals(message.getBizType())
+                && event != null && !event.getUserId().equals(userId));
         return result;
     }
 }

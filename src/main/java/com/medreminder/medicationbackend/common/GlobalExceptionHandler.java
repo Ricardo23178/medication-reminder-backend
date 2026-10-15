@@ -8,6 +8,7 @@ import org.springframework.validation.FieldError;
 import org.springframework.web.bind.MethodArgumentNotValidException;
 import org.springframework.web.bind.annotation.ExceptionHandler;
 import org.springframework.web.bind.annotation.RestControllerAdvice;
+import org.springframework.web.method.annotation.MethodArgumentTypeMismatchException;
 
 /**
  * 全局异常处理器 —— 让所有异常都走统一返回壳 {code, message, data}。
@@ -24,6 +25,11 @@ import org.springframework.web.bind.annotation.RestControllerAdvice;
 public class GlobalExceptionHandler {
 
     private static final Logger log = LoggerFactory.getLogger(GlobalExceptionHandler.class);
+
+    @ExceptionHandler(MethodArgumentTypeMismatchException.class)
+    public Result<Void> handleParameterType(MethodArgumentTypeMismatchException e) {
+        return Result.error(Result.BAD_REQUEST, "请求参数格式不正确");
+    }
 
     /** @Valid 参数校验失败：取第一条错误信息返回，前端提示更精准 */
     @ExceptionHandler(MethodArgumentNotValidException.class)

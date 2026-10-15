@@ -1,0 +1,8 @@
+{
+  "reviewer": "security",
+  "findings": [],
+  "residual_risks": [],
+  "testing_gaps": [
+    "CollaborationApiIntegrationTest covers sequential revocation and same-second rebinding, but not concurrent unbind with publication or acknowledge/close. The new relation, notification and event locking interactions therefore lack real-MySQL concurrency coverage for the immediate-revocation contract."
+  ]
+}

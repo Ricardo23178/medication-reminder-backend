@@ -13,6 +13,7 @@ import com.medreminder.medicationbackend.entity.User;
 import com.medreminder.medicationbackend.mapper.AbnormalEventMapper;
 import com.medreminder.medicationbackend.mapper.FamilyRelationMapper;
 import com.medreminder.medicationbackend.mapper.MedicineMapper;
+import com.medreminder.medicationbackend.mapper.NotificationMapper;
 import com.medreminder.medicationbackend.mapper.PlanMapper;
 import com.medreminder.medicationbackend.mapper.RemindTaskMapper;
 import com.medreminder.medicationbackend.mapper.UserMapper;
@@ -59,19 +60,22 @@ public class FamilyService {
     private final RemindTaskMapper taskMapper;
     private final PlanMapper planMapper;
     private final MedicineMapper medicineMapper;
+    private final NotificationMapper notificationMapper;
 
     public FamilyService(FamilyRelationMapper relationMapper,
                          UserMapper userMapper,
                          AbnormalEventMapper eventMapper,
                          RemindTaskMapper taskMapper,
                          PlanMapper planMapper,
-                         MedicineMapper medicineMapper) {
+                         MedicineMapper medicineMapper,
+                         NotificationMapper notificationMapper) {
         this.relationMapper = relationMapper;
         this.userMapper = userMapper;
         this.eventMapper = eventMapper;
         this.taskMapper = taskMapper;
         this.planMapper = planMapper;
         this.medicineMapper = medicineMapper;
+        this.notificationMapper = notificationMapper;
     }
 
     // ==================== 邀请与接受 ====================
@@ -214,12 +218,19 @@ public class FamilyService {
      */
     @Transactional
     public boolean unbind(Long ownerUserId, Long relationId) {
-        FamilyRelation rel = relationMapper.selectById(relationId);
+        FamilyRelation rel = relationMapper.selectOne(new LambdaQueryWrapper<FamilyRelation>()
+                .eq(FamilyRelation::getId, relationId)
+                .eq(FamilyRelation::getOwnerUserId, ownerUserId).last("FOR UPDATE"));
         if (rel == null || !rel.getOwnerUserId().equals(ownerUserId)) {
             return false;
         }
         if ("REVOKED".equals(rel.getRelationStatus())) {
             return false;
+        }
+
+        if (rel.getFamilyUserId() != null) {
+            // 用状态永久撤销旧消息，避免同一秒内重绑突破DATETIME精度的时间比较。
+            notificationMapper.revokeFamilyMessages(ownerUserId, rel.getFamilyUserId());
         }
 
         // 释放唯一键：把 family_user_id 置空，允许日后同一对重新绑定。

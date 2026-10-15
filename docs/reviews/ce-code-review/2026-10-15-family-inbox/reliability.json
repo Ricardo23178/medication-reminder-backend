@@ -1,0 +1,8 @@
+{
+  "reviewer": "reliability",
+  "findings": [],
+  "residual_risks": [],
+  "testing_gaps": [
+    "The opt-in MySQL integration class is @Transactional (CollaborationApiIntegrationTest.java:29), so its direct calls to publish and recordFailure join the test transaction; NotificationDispatcherTest.java:26-42 mocks both calls. Neither test exercises a real publish rollback followed by failure bookkeeping in a separate committed transaction, the central partial-failure path."
+  ]
+}

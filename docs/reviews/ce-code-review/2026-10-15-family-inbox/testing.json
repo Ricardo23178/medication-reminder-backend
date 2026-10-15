@@ -1,0 +1,44 @@
+{
+  "reviewer": "testing",
+  "findings": [
+    {
+      "title": "Cover closure before family alert publication",
+      "severity": "P2",
+      "file": "src/main/java/com/medreminder/medicationbackend/service/NotificationDeliveryService.java",
+      "line": 34,
+      "why_it_matters": "If a family member acknowledges and closes an event while its alert is still pending, the later dispatch must cancel the alert. The new CLOSED branch implements that behavior, but the integration tests only cancel pending alerts after revocation and only close events after separate publication. A regression here could publish a stale alert for an already finished collaboration.",
+      "autofix_class": "gated_auto",
+      "owner": "downstream-resolver",
+      "requires_verification": true,
+      "suggested_fix": "Add a real-MySQL integration case that creates an authorized pending family notification, acknowledges and closes the event before publish, invokes delivery.publish, then asserts CANCELLED, no sentAt, and a still-CLOSED event.",
+      "confidence": 75,
+      "evidence": [
+        "src/main/java/com/medreminder/medicationbackend/service/NotificationDeliveryService.java:34 --                 || (family && \"CLOSED\".equals(event.getStatus()))) {",
+        "src/test/java/com/medreminder/medicationbackend/CollaborationApiIntegrationTest.java:103 --     void revokedPendingFamilyNotificationIsCancelled() {",
+        "src/test/java/com/medreminder/medicationbackend/CollaborationApiIntegrationTest.java:198 --     void acknowledgeAndClosePreserveFirstActorAndDoNotChangeMedicationStatus() throws Exception {"
+      ],
+      "pre_existing": false
+    },
+    {
+      "title": "Exercise authorization loss between detail requests",
+      "severity": "P2",
+      "file": "entry/src/main/ets/pages/NotificationDetail.ets",
+      "line": 55,
+      "why_it_matters": "When an owner revokes family access after the detail GET and before the read POST, the screen must withhold the cached message body. The new two-request gate is the privacy boundary in this page, yet the frontend test suites only contain template string assertions. A regression that assigns the GET result before checking the read response would expose revoked content on screen.",
+      "autofix_class": "gated_auto",
+      "owner": "downstream-resolver",
+      "requires_verification": true,
+      "suggested_fix": "Add a page-level test with controlled GET and POST responses: resolve GET with a family message, return 403 from read, and assert the body remains absent while the authorization error appears; include a successful two-request case.",
+      "confidence": 75,
+      "evidence": [
+        "entry/src/main/ets/pages/NotificationDetail.ets:55 --       const readResult = parseSimpleResult(await HttpUtil.post('/api/notifications/' + this.messageId + '/read'));",
+        "entry/src/main/ets/pages/NotificationDetail.ets:57 --       if (readResult.code !== 200) {",
+        "entry/src/main/ets/pages/NotificationDetail.ets:61 --       this.message = result.data;",
+        "entry/src/test/LocalUnit.test.ets:19 --     it('assertContain', 0, () => {"
+      ],
+      "pre_existing": false
+    }
+  ],
+  "residual_risks": [],
+  "testing_gaps": []
+}

@@ -1,0 +1,610 @@
+warning: in the working copy of 'entry/src/main/ets/model/Family.ets', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'entry/src/main/ets/pages/FamilyAbnormal.ets', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'entry/src/main/ets/pages/Main.ets', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'entry/src/main/ets/pages/My.ets', LF will be replaced by CRLF the next time Git touches it
+warning: in the working copy of 'entry/src/main/resources/base/profile/main_pages.json', LF will be replaced by CRLF the next time Git touches it
+diff --git a/entry/src/main/ets/model/Family.ets b/entry/src/main/ets/model/Family.ets
+index 257979c..9bee953 100644
+--- a/entry/src/main/ets/model/Family.ets
++++ b/entry/src/main/ets/model/Family.ets
+@@ -72,20 +72,21 @@ export class AbnormalEventVO {
+   userNickname: string = '';
+   taskId: number = 0;
+   /** UNCONFIRMED_TIMEOUT/CONSECUTIVE_UNCONFIRMED/PLAN_ENDED_UNFINISHED */
+   type: string = '';
+   /** OPEN/NOTIFIED/ACKNOWLEDGED/CLOSED */
+   status: string = '';
+   occurredAt: string = '';
+   medicineName: string = '';
+   scheduledAt: string = '';
+   acknowledgedAt: string = '';
++  closedAt: string = '';
+   createTime: string = '';
+ }
+ 
+ /**
+  * 异常事件列表接口返回结构。
+  */
+ export class AbnormalEventListResult {
+   code: number = 0;
+   message: string = '';
+   data: AbnormalEventVO[] = [];
+diff --git a/entry/src/main/ets/pages/FamilyAbnormal.ets b/entry/src/main/ets/pages/FamilyAbnormal.ets
+index 36209f5..88127a5 100644
+--- a/entry/src/main/ets/pages/FamilyAbnormal.ets
++++ b/entry/src/main/ets/pages/FamilyAbnormal.ets
+@@ -1,175 +1,193 @@
+-import { promptAction } from '@kit.ArkUI';
++import { promptAction, router } from '@kit.ArkUI';
+ import { HttpUtil } from '../common/HttpUtil';
+ import { AbnormalEventVO, parseAbnormalEventList } from '../model/Family';
++import { notificationTime } from '../model/Notification';
++import { parseSimpleResult } from '../model/RemindTask';
+ 
+-/**
+- * 家属异常页（家属协同第二步）。
+- * 家属登录后，查看自己被授权的被照护方的异常事件（超时未确认等）。
+- * 后端按「关系 ACTIVE」过滤，解绑后这里自然查不到，权限即时失效。
+- */
++/** 家属只处理自己获授权的异常；知晓和关闭均不代表已服药。 */
+ @Entry
+ @Component
+ struct FamilyAbnormal {
+   @State eventList: AbnormalEventVO[] = [];
+-  @State loading: boolean = true;
++  @State loading: boolean = false;
++  @State includeClosed: boolean = false;
++  @State error: string = '';
++  @State busyId: number = 0;
+   @State refreshVersion: number = 0;
++  private generation: number = 0;
++  private visible: boolean = false;
+ 
+   onPageShow() {
++    this.visible = true;
+     this.loadList();
+   }
+ 
+-  /**
+-   * 拉取被照护方的异常事件。
+-   */
++  onPageHide() {
++    this.visible = false;
++    this.generation++;
++    this.loading = false;
++    this.busyId = 0;
++    this.eventList = [];
++  }
++
++  aboutToDisappear() {
++    this.onPageHide();
++  }
++
+   async loadList() {
++    if (!this.visible || this.loading || this.busyId !== 0) return;
++    const ticket = ++this.generation;
++    this.loading = true;
++    this.error = '';
++    this.eventList = [];
+     try {
+-      const respStr = await HttpUtil.get('/api/family/abnormal-events');
+-      const result = parseAbnormalEventList(respStr);
++      const result = parseAbnormalEventList(await HttpUtil.get(
++        '/api/family/abnormal-events?includeClosed=' + this.includeClosed));
++      if (!this.visible || ticket !== this.generation) return;
+       if (result.code === 200) {
+         this.eventList = result.data.slice();
+         this.refreshVersion++;
+       } else {
+-        promptAction.showToast({ message: result.message });
++        this.error = result.message || '加载异常事件失败，请重试';
+       }
+     } catch (e) {
+-      promptAction.showToast({ message: '加载异常事件失败，请检查网络' });
++      if (!this.visible || ticket !== this.generation) return;
++      this.error = '加载异常事件失败，请检查网络后重试';
+     } finally {
+-      this.loading = false;
++      if (ticket === this.generation) this.loading = false;
++    }
++  }
++
++  changeHistory() {
++    if (this.busyId !== 0) return;
++    this.includeClosed = !this.includeClosed;
++    this.generation++;
++    this.loading = false;
++    this.loadList();
++  }
++
++  async act(event: AbnormalEventVO, close: boolean) {
++    if (!this.visible || this.loading || this.busyId !== 0) return;
++    this.busyId = event.id;
++    const ticket = ++this.generation;
++    this.error = '';
++    try {
++      if (close) {
++        const answer = await promptAction.showDialog({
++          title: '关闭这次协同？',
++          message: '关闭后将移入历史记录。关闭协同不代表已确认服药，请先与被照护方核实情况。',
++          buttons: [{ text: '取消', color: '#666666' }, { text: '确认关闭', color: '#0a59f7' }]
++        });
++        if (!this.visible || ticket !== this.generation || answer.index !== 1) return;
++      }
++      const result = parseSimpleResult(await HttpUtil.post('/api/family/abnormal-events/' + event.id +
++        (close ? '/close' : '/acknowledge')));
++      if (!this.visible || ticket !== this.generation) return;
++      if (result.code !== 200) {
++        this.eventList = [];
++        this.error = result.message || '操作失败，请刷新后重试';
++        return;
++      }
++      this.busyId = 0;
++      await this.loadList();
++    } catch (e) {
++      if (!this.visible || ticket !== this.generation) return;
++      this.eventList = [];
++      this.error = '操作未完成，请检查网络并刷新确认状态';
++    } finally {
++      if (ticket === this.generation) this.busyId = 0;
+     }
+   }
+ 
+-  /**
+-   * 异常类型转中文。
+-   */
+   typeText(type: string): string {
+     if (type === 'UNCONFIRMED_TIMEOUT') return '超时未确认服药';
+     if (type === 'CONSECUTIVE_UNCONFIRMED') return '连续多次未确认';
+     if (type === 'PLAN_ENDED_UNFINISHED') return '计划结束未完成';
+     return type;
+   }
+ 
+-  /**
+-   * 状态转中文。
+-   */
+   statusText(status: string): string {
+     if (status === 'OPEN') return '未处理';
+     if (status === 'NOTIFIED') return '已通知';
+     if (status === 'ACKNOWLEDGED') return '已知晓';
+     if (status === 'CLOSED') return '已关闭';
+     return status;
+   }
+ 
+   statusColor(status: string): string {
+     if (status === 'OPEN') return '#ff3b30';
+-    if (status === 'NOTIFIED') return '#ff9500';
+-    if (status === 'ACKNOWLEDGED') return '#34c759';
++    if (status === 'NOTIFIED') return '#b86b00';
++    if (status === 'ACKNOWLEDGED') return '#248a3d';
+     return '#999999';
+   }
+ 
+-  /**
+-   * 把 "2026-10-03T10:00:00" 截成 "10-03 10:00"。
+-   */
+-  formatTime(s: string): string {
+-    if (s.length >= 16) {
+-      return s.substring(5, 16);
+-    }
+-    return s;
+-  }
+-
+-  /**
+-   * 安全取药品名（后端可能返回 null）。
+-   */
+-  safeMedicine(e: AbnormalEventVO): string {
+-    return e.medicineName ? e.medicineName : '未知药品';
+-  }
+-
+   build() {
+-    Column() {
+-      Text('家属异常')
+-        .fontSize(28)
+-        .fontWeight(FontWeight.Bold)
+-        .margin({ top: 60, bottom: 8 })
++    Column({ space: 12 }) {
++      Row({ space: 12 }) {
++        Button('返回').height(44).fontSize(15).onClick(() => { router.back(); })
++        Text('家属异常').fontSize(26).fontWeight(FontWeight.Bold).layoutWeight(1)
++        Button('刷新').height(44).fontSize(15).enabled(!this.loading && this.busyId === 0)
++          .onClick(() => { this.loadList(); })
++      }.width('100%').margin({ top: 48 })
+ 
+-      Text('被照护方最近未确认的用药异常')
+-        .fontSize(13)
+-        .fontColor('#999999')
+-        .margin({ bottom: 16 })
++      Text('知晓表示已关注；关闭表示本次协同结束，均不代表已服药。')
++        .fontSize(14).fontColor('#666666').width('100%')
++      Button(this.includeClosed ? '已包含关闭历史 · 点击只看待协同' : '查看历史（包含已关闭）')
++        .height(44).width('100%').fontSize(14).backgroundColor('#e8f1ff').fontColor('#0a59f7')
++        .enabled(this.busyId === 0).onClick(() => { this.changeHistory(); })
+ 
+       if (this.loading) {
+         Column() {
+-          LoadingProgress()
+-            .width(40)
+-            .height(40)
+-            .color('#0a59f7')
+-        }
+-        .width('100%')
+-        .layoutWeight(1)
+-        .justifyContent(FlexAlign.Center)
++          LoadingProgress().width(40).height(40).color('#0a59f7')
++        }.width('100%').layoutWeight(1).justifyContent(FlexAlign.Center)
++      } else if (this.error !== '') {
++        Column({ space: 16 }) {
++          Text(this.error).fontSize(16).fontColor('#c32b25').textAlign(TextAlign.Center)
++          Button('刷新重试').height(48).onClick(() => { this.loadList(); })
++        }.width('100%').layoutWeight(1).justifyContent(FlexAlign.Center)
+       } else if (this.eventList.length === 0) {
+-        Column() {
+-          Text('暂无异常')
+-            .fontSize(16)
+-            .fontColor('#999999')
+-          Text('被照护方按时服药，没有超时未确认的情况')
+-            .fontSize(13)
+-            .fontColor('#bbbbbb')
+-            .margin({ top: 8 })
+-        }
+-        .width('100%')
+-        .layoutWeight(1)
+-        .justifyContent(FlexAlign.Center)
++        Column({ space: 8 }) {
++          Text(this.includeClosed ? '暂无可查看的异常记录' : '暂无待协同异常').fontSize(16).fontColor('#999999')
++          Text('仅显示当前授权范围内的异常，请结合实际情况了解用药。')
++            .fontSize(14).fontColor('#999999').textAlign(TextAlign.Center)
++        }.width('100%').layoutWeight(1).justifyContent(FlexAlign.Center)
+       } else {
+         List({ space: 12 }) {
+-          ForEach(this.eventList, (e: AbnormalEventVO) => {
++          ForEach(this.eventList, (event: AbnormalEventVO) => {
+             ListItem() {
+-              Column() {
+-                // 上半部分：被照护方昵称 + 状态标签
+-                Row() {
+-                  Text(e.userNickname ? e.userNickname : '被照护方')
+-                    .fontSize(17)
+-                    .fontWeight(FontWeight.Medium)
+-                    .fontColor('#333333')
+-                  Text(this.statusText(e.status))
+-                    .fontSize(12)
+-                    .fontColor(this.statusColor(e.status))
+-                    .padding({ left: 10, right: 10, top: 4, bottom: 4 })
+-                    .backgroundColor('#f0f0f0')
+-                    .borderRadius(10)
+-                    .margin({ left: 10 })
++              Column({ space: 10 }) {
++                Row({ space: 10 }) {
++                  Text(event.userNickname || '被照护方').fontSize(17).fontWeight(FontWeight.Medium)
++                    .layoutWeight(1)
++                  Text(this.statusText(event.status)).fontSize(14).fontColor(this.statusColor(event.status))
++                }.width('100%')
++                Text((event.medicineName || '未知药品') + ' · ' + this.typeText(event.type))
++                  .fontSize(16).fontColor('#333333').width('100%')
++                Text('发生：' + notificationTime(event.occurredAt)).fontSize(13).fontColor('#777777').width('100%')
++                if (event.scheduledAt) {
++                  Text('计划：' + notificationTime(event.scheduledAt)).fontSize(13).fontColor('#777777').width('100%')
+                 }
+-                .width('100%')
+-                .justifyContent(FlexAlign.SpaceBetween)
+-
+-                // 药品 + 异常类型
+-                Text(this.safeMedicine(e) + ' · ' + this.typeText(e.type))
+-                  .fontSize(15)
+-                  .fontColor('#333333')
+-                  .margin({ top: 10 })
+-                  .width('100%')
+-                  .textAlign(TextAlign.Start)
+-
+-                // 发生时间
+-                Text(this.formatTime(e.occurredAt))
+-                  .fontSize(13)
+-                  .fontColor('#999999')
+-                  .margin({ top: 6 })
+-                  .width('100%')
+-                  .textAlign(TextAlign.Start)
+-              }
+-              .width('100%')
+-              .padding({ left: 16, right: 16, top: 16, bottom: 16 })
+-              .backgroundColor('#ffffff')
+-              .borderRadius(12)
++                if (event.acknowledgedAt) {
++                  Text('知晓：' + notificationTime(event.acknowledgedAt)).fontSize(13).fontColor('#777777').width('100%')
++                }
++                if (event.closedAt) {
++                  Text('关闭：' + notificationTime(event.closedAt)).fontSize(13).fontColor('#777777').width('100%')
++                }
++                if (event.status === 'OPEN' || event.status === 'NOTIFIED') {
++                  Button(this.busyId === event.id ? '正在处理…' : '我已知晓').height(48).width('100%')
++                    .backgroundColor('#0a59f7').enabled(this.busyId === 0)
++                    .onClick(() => { this.act(event, false); })
++                } else if (event.status === 'ACKNOWLEDGED') {
++                  Button(this.busyId === event.id ? '正在处理…' : '关闭本次协同').height(48).width('100%')
++                    .backgroundColor('#e8f1ff').fontColor('#0a59f7').enabled(this.busyId === 0)
++                    .onClick(() => { this.act(event, true); })
++                }
++              }.width('100%').padding(16).alignItems(HorizontalAlign.Start)
++                .backgroundColor('#f5f7fa').borderRadius(12)
+             }
+-          }, (e: AbnormalEventVO) => e.id.toString() + '_' + this.refreshVersion.toString())
+-        }
+-        .width('100%')
+-        .layoutWeight(1)
+-        .padding({ left: 16, right: 16 })
+-        .scrollBar(BarState.Off)
++          }, (event: AbnormalEventVO) => event.id.toString() + '_' + this.refreshVersion)
++        }.width('100%').layoutWeight(1).scrollBar(BarState.Auto)
+       }
+-    }
+-    .width('100%')
+-    .height('100%')
++    }.width('100%').height('100%').padding({ left: 16, right: 16, bottom: 16 })
+   }
+ }
+diff --git a/entry/src/main/ets/pages/Main.ets b/entry/src/main/ets/pages/Main.ets
+index 5e18dd2..d371164 100644
+--- a/entry/src/main/ets/pages/Main.ets
++++ b/entry/src/main/ets/pages/Main.ets
+@@ -14,28 +14,34 @@ import { MyPage } from './My';
+  *
+  * currentTab + refreshTick 两个状态驱动子页刷新：
+  *   - onChange：切 Tab 时更新 currentTab 并 refreshTick++，触发当前 Tab 刷新
+  *   - onPageShow：从二级页（新增药品/建计划/家属异常）返回时 refreshTick++，刷新当前 Tab
+  */
+ @Entry
+ @Component
+ struct Main {
+   @State currentTab: number = 0;
+   @State refreshTick: number = 0;
++  @State pageVisible: boolean = true;
+ 
+   /**
+    * 从二级页返回时触发，刷新当前 Tab。
+    */
+   onPageShow() {
++    this.pageVisible = true;
+     this.refreshTick++;
+   }
+ 
++  onPageHide() {
++    this.pageVisible = false;
++  }
++
+   build() {
+     Tabs({ barPosition: BarPosition.End }) {
+       TabContent() {
+         HomePage({ currentTab: this.currentTab, refreshTick: this.refreshTick })
+       }
+       .tabBar('今日')
+ 
+       TabContent() {
+         MedicineListPage({ currentTab: this.currentTab, refreshTick: this.refreshTick })
+       }
+@@ -45,21 +51,21 @@ struct Main {
+         PlanListPage({ currentTab: this.currentTab, refreshTick: this.refreshTick })
+       }
+       .tabBar('计划')
+ 
+       TabContent() {
+         FamilyListPage({ currentTab: this.currentTab, refreshTick: this.refreshTick })
+       }
+       .tabBar('家属')
+ 
+       TabContent() {
+-        MyPage()
++        MyPage({ currentTab: this.currentTab, refreshTick: this.refreshTick, pageVisible: this.pageVisible })
+       }
+       .tabBar('我的')
+     }
+     .barMode(BarMode.Fixed)
+     .scrollable(false)
+     .onChange((index: number) => {
+       this.currentTab = index;
+       this.refreshTick++;
+     })
+     .width('100%')
+diff --git a/entry/src/main/ets/pages/My.ets b/entry/src/main/ets/pages/My.ets
+index 794739a..947d9aa 100644
+--- a/entry/src/main/ets/pages/My.ets
++++ b/entry/src/main/ets/pages/My.ets
+@@ -1,96 +1,166 @@
+ import { preferences } from '@kit.ArkData';
+-import { promptAction } from '@kit.ArkUI';
+ import { router } from '@kit.ArkUI';
+ import { Constants } from '../common/Constants';
++import { HttpUtil } from '../common/HttpUtil';
++import { UnreadCountResult } from '../model/Notification';
+ 
+ /**
+- * 「我的」Tab 页：显示昵称 + 退出登录。
++ * 「我的」Tab 页：消息中心、服药记录及账号操作。
+  */
+ @Component
+ export struct MyPage {
++  @Prop @Watch('onRefresh') currentTab: number = 4;
++  @Prop @Watch('onRefresh') refreshTick: number = 0;
++  @Prop @Watch('onRefresh') pageVisible: boolean = true;
+   @State nickname: string = '用户';
++  @State unreadCount: number = 0;
++  @State countLoading: boolean = false;
++  @State countError: boolean = false;
++  private countGeneration: number = 0;
++  private active: boolean = true;
+ 
+   async aboutToAppear() {
++    this.active = true;
+     try {
+       const prefs = await preferences.getPreferences(getContext(), 'medication');
+       const name = await prefs.get(Constants.KEY_NICKNAME, '用户') as string;
+       if (name !== '') {
+         this.nickname = name;
+       }
+     } catch (e) {
+       this.nickname = '用户';
+     }
++    if (this.active && this.pageVisible && this.currentTab === 4) this.loadUnreadCount();
++  }
++
++  aboutToDisappear() {
++    this.active = false;
++    this.countGeneration++;
++  }
++
++  onRefresh() {
++    if (this.pageVisible && this.currentTab === 4) {
++      this.loadUnreadCount();
++    } else {
++      this.countGeneration++;
++      this.countLoading = false;
++      this.unreadCount = 0;
++    }
++  }
++
++  async loadUnreadCount() {
++    if (!this.active || !this.pageVisible || this.currentTab !== 4 || this.countLoading) return;
++    const ticket = ++this.countGeneration;
++    this.countLoading = true;
++    this.countError = false;
++    this.unreadCount = 0;
++    try {
++      const result = JSON.parse(await HttpUtil.get('/api/notifications/unread-count')) as UnreadCountResult;
++      if (!this.active || !this.pageVisible || this.currentTab !== 4 || ticket !== this.countGeneration) return;
++      if (result.code === 200) this.unreadCount = result.data;
++      else this.countError = true;
++    } catch (e) {
++      if (!this.active || !this.pageVisible || this.currentTab !== 4 || ticket !== this.countGeneration) return;
++      this.countError = true;
++    } finally {
++      if (ticket === this.countGeneration) this.countLoading = false;
++    }
+   }
+ 
+   /**
+    * 退出登录：清空本地 token/昵称/userId，回登录页。
+    */
+   async logout() {
++    this.countGeneration++;
++    this.active = false;
+     try {
+       const prefs = await preferences.getPreferences(getContext(), 'medication');
+       await prefs.delete(Constants.KEY_TOKEN);
+       await prefs.delete(Constants.KEY_NICKNAME);
+       await prefs.delete(Constants.KEY_USER_ID);
+       await prefs.flush();
+     } catch (e) {
+       // 忽略，直接跳登录页
+     }
+     router.replaceUrl({ url: 'pages/Login' });
+   }
+ 
+   build() {
+-    Column() {
++    Scroll() {
++      Column() {
+       // 头像占位：昵称首字
+       Text(this.nickname.length > 0 ? this.nickname.substring(0, 1) : '用')
+         .fontSize(30)
+         .fontColor('#ffffff')
+         .width(72)
+         .height(72)
+         .textAlign(TextAlign.Center)
+         .borderRadius(36)
+         .backgroundColor('#0a59f7')
+-        .margin({ top: 80 })
++        .margin({ top: 60 })
+ 
+       Text(this.nickname)
+         .fontSize(20)
+         .fontWeight(FontWeight.Bold)
+         .margin({ top: 16 })
+ 
+       Text('普通用户')
+         .fontSize(13)
+         .fontColor('#999999')
+         .margin({ top: 6 })
+ 
++      Button({ type: ButtonType.Normal }) {
++        Row({ space: 12 }) {
++          Text('消息中心').fontSize(16).fontColor('#333333').layoutWeight(1)
++          if (this.countLoading) {
++            Text('查询中…').fontSize(13).fontColor('#999999')
++          } else if (this.countError) {
++            Text('未读数暂不可用').fontSize(13).fontColor('#999999')
++          } else if (this.unreadCount > 0) {
++            Text(this.unreadCount > 99 ? '99+' : this.unreadCount.toString())
++              .fontSize(13).fontColor('#ffffff').padding({ left: 8, right: 8, top: 4, bottom: 4 })
++              .backgroundColor('#ff3b30').borderRadius(12)
++          }
++          Text('›').fontSize(20).fontColor('#999999')
++        }.width('100%').padding(16)
++      }.width('80%').backgroundColor('#f5f7fa').borderRadius(12).margin({ top: 32 })
++        .onClick(() => { router.pushUrl({ url: 'pages/Notifications' }); })
++      if (this.countError) {
++        Button('重试未读数').height(44).fontSize(14).backgroundColor('#e8f1ff').fontColor('#0a59f7')
++          .margin({ top: 8 }).onClick(() => { this.loadUnreadCount(); })
++      }
++
+       // 服药记录入口
+-      Row() {
++      Button({ type: ButtonType.Normal }) {
++        Row() {
+         Text('服药记录')
+           .fontSize(16)
+           .fontColor('#333333')
+           .layoutWeight(1)
+         Text('›')
+           .fontSize(20)
+           .fontColor('#999999')
+       }
+-      .width('80%')
++      .width('100%')
+       .padding({ left: 16, right: 16, top: 14, bottom: 14 })
+-      .margin({ top: 40 })
++      }.width('80%')
++      .margin({ top: 12 })
+       .backgroundColor('#f5f7fa')
+       .borderRadius(12)
+       .onClick(() => {
+         router.pushUrl({ url: 'pages/RecordList' });
+       })
+ 
+       Button('退出登录')
+         .fontSize(16)
+         .width('80%')
+         .height(48)
+         .margin({ top: 24 })
+         .backgroundColor('#ff3b30')
+         .onClick(() => {
+           this.logout();
+         })
+-    }
+-    .width('100%')
+-    .height('100%')
++      }.width('100%').padding({ bottom: 32 })
++    }.width('100%').height('100%').scrollBar(BarState.Auto)
+   }
+ }
+diff --git a/entry/src/main/resources/base/profile/main_pages.json b/entry/src/main/resources/base/profile/main_pages.json
+index 7eb7a99..c299a65 100644
+--- a/entry/src/main/resources/base/profile/main_pages.json
++++ b/entry/src/main/resources/base/profile/main_pages.json
+@@ -1,13 +1,15 @@
+ {
+   "src": [
+     "pages/Index",
+     "pages/Login",
+     "pages/Register",
+     "pages/Main",
+     "pages/MedicineAdd",
+     "pages/PlanAdd",
+     "pages/FamilyAbnormal",
+     "pages/Statistics",
+-    "pages/RecordList"
++    "pages/RecordList",
++    "pages/Notifications",
++    "pages/NotificationDetail"
+   ]
+ }
+
