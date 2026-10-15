@@ -1,0 +1,30 @@
+{
+  "run_id": "20261015-admin-console-d2d8900e",
+  "run_dir": "D:\\HuaweiMoveData\\Users\\86186\\Desktop\\毕业设计\\medication-backend\\docs\\reviews\\ce-code-review\\2026-10-15-admin-console",
+  "base": "7ad63e527d197b1b183708a54883cbce4623fe0c",
+  "scope": "local-aligned",
+  "intent": "Deliver the week-12 Vue3 administrative console: ordinary-user enable/disable, fixed versioned dictionaries/templates/delivery settings, operational metadata, and successful sensitive-operation audits in the same transaction. Protected requests must use current DB role/status, invalidate disabled-user JWTs, preserve family/medication semantics, keep health/contact/message content out of admin projections, and actually apply templates plus pause/batch delivery controls.",
+  "plan": "docs/admin-console.md",
+  "plan_source": "explicit",
+  "plan_readiness": "legacy contract, no R/U IDs",
+  "cross_model": {
+    "status": "not_run",
+    "reason": "Only codex CLI installed; no attestably different provider route installed",
+    "host_family": "codex",
+    "host_harness": "codex"
+  },
+  "scope_override": "Caller explicitly includes all task untracked source; generated node_modules/dist and package-lock excluded. Scope helper only measures tracked files; untracked source manually included in full.diff and files.txt.",
+  "standards": "none: successful rg search found no applicable AGENTS/CLAUDE/CODING_STANDARDS",
+  "roster": [
+    "correctness",
+    "testing",
+    "maintainability",
+    "security",
+    "performance",
+    "api-contract",
+    "data-migration",
+    "reliability",
+    "adversarial",
+    "julik-frontend-races"
+  ]
+}

@@ -24,7 +24,7 @@ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.
 /** Opt-in real MySQL verification. Every fixture and API write rolls back with its test. */
 @EnabledIfEnvironmentVariable(named = "RUN_MYSQL_INTEGRATION_TESTS", matches = "true")
 @SpringBootTest(properties = {"reminder.scheduling.enabled=false", "notification.delivery.enabled=false",
-        "app.initialize-admin=false"})
+        "app.initialize-admin=false", "app.initialize-console=true"})
 @AutoConfigureMockMvc
 @Transactional
 class CollaborationApiIntegrationTest {
@@ -40,6 +40,31 @@ class CollaborationApiIntegrationTest {
     @Autowired RemindTaskMapper tasks;
     @Autowired NotificationService inbox;
     @Autowired NotificationDeliveryService delivery;
+    @Autowired org.springframework.jdbc.core.JdbcTemplate jdbc;
+
+    @Test
+    void configuredTemplatesApplyOnlyToNewlyQueuedMessages() throws Exception {
+        Long owner=user();
+        User admin=users.selectById(user()); admin.setRole("ADMIN"); users.updateById(admin);
+        AbnormalEvent first=event(owner);
+        inbox.queueAbnormalEvent(first);
+        var original=notifications.selectOne(new com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper<Notification>()
+                .eq(Notification::getBizId,first.getId()).eq(Notification::getReceiverId,owner));
+        var setting=jdbc.queryForMap("select id,version from admin_setting where code='notification.owner'");
+        String value="{\"title\":\"配置后的新标题\",\"content\":\"配置后的新正文\"}";
+        String body=new com.fasterxml.jackson.databind.ObjectMapper().writeValueAsString(
+                java.util.Map.of("value",value,"version",setting.get("version"),"reason","验证新通知模板生效"));
+        mvc.perform(put("/api/admin/settings/{id}",setting.get("id"))
+                        .header("Authorization","Bearer "+jwt.generate(admin.getId(),"ADMIN"))
+                        .contentType("application/json").content(body)).andExpect(jsonPath("$.code").value(200));
+        AbnormalEvent second=event(owner);
+        inbox.queueAbnormalEvent(second);
+        var latest=notifications.selectOne(new com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper<Notification>()
+                .eq(Notification::getBizId,second.getId()).eq(Notification::getReceiverId,owner));
+        assertEquals("配置后的新标题",latest.getTitle());
+        assertEquals("配置后的新正文",latest.getContent());
+        assertEquals(original.getTitle(),notifications.selectById(original.getId()).getTitle());
+    }
 
     @Test
     void eventFanoutIsIdempotentAndExcludesLateOrInsufficientGrants() {

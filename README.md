@@ -25,8 +25,10 @@
 - **定时任务**：`@Scheduled` 每 5 分钟自动生成当日提醒、扫描超时未确认任务；变更计划会取消待执行任务
 - **家属协同**：owner 发起邀请码 → family 凭码接受，授权权在数据主体手里，解绑后权限即时失效
 - **幂等设计**：确认服药、生成任务、异常事件均有唯一键兜底，防重复
+- **Web管理后台**：`admin-web/` 提供Vue 3管理端，支持用户状态、字典、通知模板、投递参数、异常与通知状态和操作审计，见[后台说明](docs/admin-console.md)。
+- **实时账号校验**：禁用账号的旧JWT后续请求会被拒绝；管理员权限以数据库当前角色为准。
 
-## 接口清单（10 个业务接口）
+## 核心接口概览
 
 | 模块 | 方法 | 路径 |
 |------|------|------|
@@ -41,6 +43,8 @@
 | 家属 | GET/DELETE | `/api/family/relations` `/relations/{id}` |
 | 家属 | GET | `/api/family/abnormal-events` |
 | 统计 | GET | `/api/statistics/calendar` |
+| 消息 | GET/POST | `/api/notifications` 及详情、已读接口，见[消息说明](docs/family-collaboration-and-inbox.md) |
+| 后台 | GET/PATCH/PUT | `/api/admin/**`，见[后台接口与权限](docs/admin-console.md) |
 
 > 另有 2 个测试辅助接口：`POST /api/reminders/generate-today`、`POST /api/reminders/scan-expired`（仅 ADMIN 可手动触发）。普通用户查询今日提醒时会按需生成本人任务。
 
@@ -50,7 +54,8 @@
 src/main/java/com/medreminder/medicationbackend/
 ├── common/      # 统一返回 Result、全局异常处理、用户上下文 UserContext
 ├── config/      # 拦截器 AuthInterceptor、定时任务 ReminderScheduler、数据初始化
-├── controller/  # 接口层（8 个 Controller）
+├── controller/  # 移动端接口层
+├── admin/       # 管理端接口、配置与审计
 ├── dto/         # 请求体
 ├── entity/      # 数据库实体
 ├── mapper/      # MyBatis-Plus Mapper

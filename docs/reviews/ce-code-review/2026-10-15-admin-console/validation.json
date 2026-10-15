@@ -1,0 +1,8 @@
+{
+  "status": "not_required",
+  "selected_findings": 0,
+  "validator_batches": 0,
+  "cross_model_shortcut_count": 0,
+  "reason": "Stage5b selects surviving P0/P1 and actionable findings only; both sets are empty. Testing-only soft gaps are not promoted or sent to a validator.",
+  "infrastructure_failures": []
+}

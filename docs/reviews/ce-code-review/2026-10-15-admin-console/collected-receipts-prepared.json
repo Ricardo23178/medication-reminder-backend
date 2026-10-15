@@ -1,0 +1,51 @@
+[
+  {
+    "reviewer": "correctness",
+    "status": "terminal_collected",
+    "artifact": "docs\\reviews\\ce-code-review\\2026-10-15-admin-console\\correctness.json",
+    "findings": 0,
+    "testing_gaps": 0
+  },
+  {
+    "reviewer": "testing",
+    "status": "terminal_collected",
+    "artifact": "docs\\reviews\\ce-code-review\\2026-10-15-admin-console\\testing.json",
+    "findings": 0,
+    "testing_gaps": 2
+  },
+  {
+    "reviewer": "maintainability",
+    "status": "terminal_collected",
+    "artifact": "docs\\reviews\\ce-code-review\\2026-10-15-admin-console\\maintainability.json",
+    "findings": 0,
+    "testing_gaps": 0
+  },
+  {
+    "reviewer": "security",
+    "status": "terminal_collected",
+    "artifact": "docs\\reviews\\ce-code-review\\2026-10-15-admin-console\\security.json",
+    "findings": 0,
+    "testing_gaps": 0
+  },
+  {
+    "reviewer": "api-contract",
+    "status": "terminal_collected",
+    "artifact": "docs\\reviews\\ce-code-review\\2026-10-15-admin-console\\api-contract.json",
+    "findings": 0,
+    "testing_gaps": 0
+  },
+  {
+    "reviewer": "reliability",
+    "status": "terminal_collected",
+    "artifact": "docs\\reviews\\ce-code-review\\2026-10-15-admin-console\\reliability.json",
+    "findings": 0,
+    "testing_gaps": 0
+  },
+  {
+    "reviewer": "adversarial",
+    "status": "terminal_collected",
+    "artifact": "docs\\reviews\\ce-code-review\\2026-10-15-admin-console\\adversarial.json",
+    "findings": 0,
+    "testing_gaps": 0
+  }
+]

@@ -1,0 +1,7 @@
+# Caller follow-up
+
+Completed review receipt: `review.json`, status `complete`, run `20261015-admin-console-d2d8900e`. Ten selected reviewers returned terminal results; zero actionable findings, so no finding-apply batch or residual-work decision was required. The two testing fidelity gaps are retained in the acceptance record and are not claimed as verified failure cases.
+
+After the review snapshot, the caller ran `NotificationDispatcherTest` alone. Five cases passed, while the batch-size SQL assertion errored because Notification metadata had previously been initialized only by other test classes. Added a local `@BeforeAll` using the existing `TableInfoHelper.initTableInfo` pattern. The exact `LIMIT 25` assertion remains intact. Isolated rerun: six tests, zero failures/errors. The independent review owner read this setup-only patch and confirmed the pattern and preserved assertion; it did not rerun the full review or change the original receipt. No production source changed after the reviewed snapshot.
+
+Final verification includes the full MySQL-enabled Maven suite, eight Node tests, production Vite build, real Chrome fixture flows at 1440px/390px, source syntax/whitespace checks, and a healthy running backend plus anonymous admin401 through the Vite proxy. Full lint has no configured standalone runner; existing bundle size warnings and untested failure/concurrency limits are explicit in the acceptance record. Raw generated review prompts/diff snapshots retain their evidence formatting and are excluded from source whitespace checks.

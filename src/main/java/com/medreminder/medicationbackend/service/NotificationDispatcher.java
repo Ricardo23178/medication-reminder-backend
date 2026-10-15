@@ -5,6 +5,7 @@ import com.medreminder.medicationbackend.entity.AbnormalEvent;
 import com.medreminder.medicationbackend.entity.Notification;
 import com.medreminder.medicationbackend.mapper.AbnormalEventMapper;
 import com.medreminder.medicationbackend.mapper.NotificationMapper;
+import com.medreminder.medicationbackend.admin.ConsoleSettings;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
 import org.springframework.stereotype.Service;
@@ -17,20 +18,24 @@ public class NotificationDispatcher {
     private final AbnormalEventMapper events;
     private final NotificationService service;
     private final NotificationDeliveryService delivery;
+    private final ConsoleSettings settings;
 
     public NotificationDispatcher(NotificationMapper notifications, AbnormalEventMapper events,
-                                  NotificationService service, NotificationDeliveryService delivery) {
+                                  NotificationService service, NotificationDeliveryService delivery, ConsoleSettings settings) {
         this.notifications = notifications;
         this.events = events;
         this.service = service;
         this.delivery = delivery;
+        this.settings = settings;
     }
 
     public void dispatchPending() {
+        var policy = settings.deliveryPolicy();
+        if (policy.paused()) return;
         for (Notification message : notifications.selectList(new LambdaQueryWrapper<Notification>()
                 .in(Notification::getSendStatus, "PENDING", "FAILED")
                 .lt(Notification::getRetryCount, NotificationDeliveryService.MAX_ATTEMPTS)
-                .orderByAsc(Notification::getId).last("LIMIT 100"))) {
+                .orderByAsc(Notification::getId).last("LIMIT " + policy.batchSize()))) {
             try {
                 // 兼容上一阶段只有本人待发送消息的存量数据；家属资格按事件发生时刻检查。
                 if ("ABNORMAL_EVENT".equals(message.getBizType()) && message.getBizId() != null) {

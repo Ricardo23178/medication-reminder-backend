@@ -1,0 +1,62 @@
+[
+  {
+    "reviewer": "correctness",
+    "status": "terminal_collected",
+    "artifact": "correctness.json",
+    "launch": "/root/admin_final_review/correctness"
+  },
+  {
+    "reviewer": "testing",
+    "status": "terminal_collected",
+    "artifact": "testing.json",
+    "launch": "/root/admin_final_review/testing"
+  },
+  {
+    "reviewer": "maintainability",
+    "status": "terminal_collected",
+    "artifact": "maintainability.json",
+    "launch": "/root/admin_final_review/maintainability"
+  },
+  {
+    "reviewer": "security",
+    "status": "terminal_collected",
+    "artifact": "security.json",
+    "launch": "/root/admin_final_review/security"
+  },
+  {
+    "reviewer": "performance",
+    "status": "terminal_collected",
+    "artifact": "performance.json",
+    "launch": "/root/admin_final_review/performance"
+  },
+  {
+    "reviewer": "api-contract",
+    "status": "terminal_collected",
+    "artifact": "api-contract.json",
+    "launch": "/root/admin_final_review/api_contract"
+  },
+  {
+    "reviewer": "data-migration",
+    "status": "terminal_collected",
+    "artifact": "data-migration.json",
+    "launch": "/root/admin_final_review/schema"
+  },
+  {
+    "reviewer": "reliability",
+    "status": "terminal_collected",
+    "artifact": "reliability.json",
+    "launch": "/root/admin_final_review/reliability"
+  },
+  {
+    "reviewer": "adversarial",
+    "status": "terminal_collected",
+    "artifact": "adversarial.json",
+    "launch": "/root/admin_final_review/adversarial"
+  },
+  {
+    "reviewer": "julik-frontend-races",
+    "status": "terminal_collected",
+    "artifact": "julik-frontend-races.json",
+    "launch": "/root/admin_final_review/frontend_races"
+  }
+]

@@ -1,0 +1,85 @@
+{
+  "plan": "docs/admin-console.md",
+  "plan_source": "explicit",
+  "format": "legacy prose contract, no unified metadata",
+  "readiness": "not a ce-unified-plan; explicit task contract used as requirements",
+  "extracted_r_ids": [],
+  "extracted_u_ids": [],
+  "coverage": [
+    {
+      "requirement": "管理员登录和运行概览",
+      "implementation": "AdminClient.signIn/verify; AdminService.me:16/overview:19; AdminController",
+      "validation": "AdminApiIntegrationTest:30; session.test.js:36/78",
+      "status": "met"
+    },
+    {
+      "requirement": "普通用户查询与启停，保护管理员且无提权/删除/药计划变更接口",
+      "implementation": "AdminService.users:28/status:67; AdminController route inventory",
+      "validation": "AdminApiIntegrationTest:72/84/95",
+      "status": "met"
+    },
+    {
+      "requirement": "固定字典/模板/参数，version冲突拒绝",
+      "implementation": "ConsoleSettings.validate:34; AdminService.updateSetting:80 FOR UPDATE+version; App.vue409 handler",
+      "validation": "AdminApiIntegrationTest:102/114; validation.test.js",
+      "status": "met"
+    },
+    {
+      "requirement": "异常和通知仅最小元数据，默认不返回正文/患者ID/接收人/联系方式",
+      "implementation": "AdminService.USER_COLUMNS:15, events:42, notifications:46; Vue explicit columns",
+      "validation": "AdminApiIntegrationTest:95/127; seeded event/notification nonempty-result assertion remains a testing gap",
+      "status": "met"
+    },
+    {
+      "requirement": "成功敏感变更与审计同事务，失败不记成功审计，只读审计",
+      "implementation": "AdminService @Transactional:66/79, audit:95; audit route GET-only",
+      "validation": "AdminApiIntegrationTest:72/102/114; audit-insert rollback failure path not separately tested",
+      "status": "met"
+    },
+    {
+      "requirement": "受保护请求核对DB当前role/status；禁用删除旧JWT401，USER后台403",
+      "implementation": "AuthInterceptor:51/59/66; MyBatis User @TableLogic",
+      "validation": "AdminApiIntegrationTest:46/53/58/63/72",
+      "status": "met"
+    },
+    {
+      "requirement": "增量幂等SQL，不改业务表，不重置账号；启动DDL可关闭",
+      "implementation": "db/admin-console.sql only CREATE IF NOT EXISTS/INSERT IGNORE; ConsoleSchemaInitializer",
+      "validation": "Caller runtime initializer restart succeeded; real DB tests",
+      "status": "met"
+    },
+    {
+      "requirement": "本人/家属模板用于后续新入队，不重写历史",
+      "implementation": "NotificationService:51/60; ConsoleSettings.template:28",
+      "validation": "CollaborationApiIntegrationTest:46",
+      "status": "met"
+    },
+    {
+      "requirement": "pause和batch实际接下一批投递，不改变入队、去重、重试和家属状态",
+      "implementation": "NotificationDispatcher:33/34/38; existing delivery and queue semantics retained",
+      "validation": "NotificationDispatcherTest:28/34 and collaboration regressions",
+      "status": "met"
+    },
+    {
+      "requirement": "分页边界、枚举绑定、排序、统一响应契约",
+      "implementation": "AdminService.page:60/byStatus:54; AdminController; ApiError/request client",
+      "validation": "AdminApiIntegrationTest:136; session/validation tests",
+      "status": "met"
+    },
+    {
+      "requirement": "前端401/403清理、旧响应隔离、保存互斥、409重新读取",
+      "implementation": "AdminClient generation; ViewGuard; App.vue save/load/endSession",
+      "validation": "session.test.js; Chrome fixture test1440/390 per caller",
+      "status": "met"
+    }
+  ],
+  "implementation_unit_completeness": "not applicable; no U-ID plan claims",
+  "not_in_scope": [
+    "family collaboration work before7ad63e5",
+    "new medication/family mutation powers",
+    "export/account deletion/device push",
+    "baseline full-schema creation"
+  ],
+  "result": "met",
+  "unaddressed_requirements": []
+}

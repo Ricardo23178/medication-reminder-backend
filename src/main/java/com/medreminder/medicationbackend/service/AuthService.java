@@ -1,6 +1,7 @@
 package com.medreminder.medicationbackend.service;
 
 import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
 import com.medreminder.medicationbackend.common.Result;
 import com.medreminder.medicationbackend.dto.RegisterRequest;
 import com.medreminder.medicationbackend.entity.User;
@@ -49,8 +50,8 @@ public class AuthService {
         }
 
         // 更新最近登录时间
-        user.setLastLoginAt(LocalDateTime.now());
-        userMapper.updateById(user);
+        userMapper.update(null, new LambdaUpdateWrapper<User>().eq(User::getId, user.getId())
+                .set(User::getLastLoginAt, LocalDateTime.now()));
 
         return Result.ok(buildAuthData(user));
     }

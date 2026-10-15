@@ -9,6 +9,7 @@ import com.medreminder.medicationbackend.mapper.FamilyRelationMapper;
 import com.medreminder.medicationbackend.mapper.NotificationMapper;
 import com.medreminder.medicationbackend.vo.NotificationPageVO;
 import com.medreminder.medicationbackend.vo.NotificationVO;
+import com.medreminder.medicationbackend.admin.ConsoleSettings;
 import org.springframework.stereotype.Service;
 import org.springframework.transaction.annotation.Transactional;
 
@@ -25,12 +26,14 @@ public class NotificationService {
     private final NotificationMapper notifications;
     private final AbnormalEventMapper events;
     private final FamilyRelationMapper relations;
+    private final ConsoleSettings settings;
 
     public NotificationService(NotificationMapper notifications, AbnormalEventMapper events,
-                               FamilyRelationMapper relations) {
+                               FamilyRelationMapper relations, ConsoleSettings settings) {
         this.notifications = notifications;
         this.events = events;
         this.relations = relations;
+        this.settings = settings;
     }
 
     /** 与异常事件同事务入队；锁定事件串行化，避免重复扫描产生重复家属消息。 */
@@ -45,7 +48,8 @@ public class NotificationService {
                 .eq(Notification::getBizType, "ABNORMAL_EVENT").eq(Notification::getBizId, event.getId()))) {
             receivers.add(existing.getReceiverId());
         }
-        if (receivers.add(event.getUserId())) create(event, event.getUserId(), false);
+        if (receivers.add(event.getUserId())) create(event, event.getUserId(), false, settings.template(false));
+        ConsoleSettings.MessageTemplate familyTemplate = null;
         for (FamilyRelation relation : relations.selectList(new LambdaQueryWrapper<FamilyRelation>()
                 .eq(FamilyRelation::getOwnerUserId, event.getUserId())
                 .eq(FamilyRelation::getRelationStatus, "ACTIVE"))) {
@@ -53,7 +57,8 @@ public class NotificationService {
             if (relation.getFamilyUserId() != null && FamilyService.hasAbnormalScope(relation.getScope())
                     && relation.getBindTime() != null && !relation.getBindTime().isAfter(event.getOccurredAt())
                     && receivers.add(relation.getFamilyUserId())) {
-                create(event, relation.getFamilyUserId(), true);
+                if (familyTemplate == null) familyTemplate = settings.template(true);
+                create(event, relation.getFamilyUserId(), true, familyTemplate);
             }
         }
     }
@@ -95,13 +100,12 @@ public class NotificationService {
 
     public int readAll(Long userId) { return notifications.markAllVisibleRead(userId); }
 
-    private void create(AbnormalEvent event, Long receiver, boolean family) {
+    private void create(AbnormalEvent event, Long receiver, boolean family, ConsoleSettings.MessageTemplate template) {
         Notification message = new Notification();
         message.setReceiverId(receiver);
         message.setType(family ? "FAMILY_ALERT" : "SYSTEM");
-        message.setTitle(family ? "家属用药未确认提醒" : "用药未确认提醒");
-        message.setContent(family ? "您关注的家人有用药提醒超时未确认，请查看授权范围内的异常事件。"
-                : "您有用药提醒超时未确认，系统已记录异常。这不代表医学意义上的漏服。");
+        message.setTitle(template.title());
+        message.setContent(template.content());
         message.setBizType("ABNORMAL_EVENT");
         message.setBizId(event.getId());
         message.setReadFlag(0);

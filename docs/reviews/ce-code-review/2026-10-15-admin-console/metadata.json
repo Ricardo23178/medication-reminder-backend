@@ -1,0 +1,12 @@
+{
+  "run_id": "20261015-admin-console-d2d8900e",
+  "branch": "optimize/current-progress",
+  "head_sha": "7ad63e527d197b1b183708a54883cbce4623fe0c",
+  "verdict": "Ready to merge",
+  "completed_at": "2026-10-15T13:07:08.760098+00:00",
+  "status": "complete",
+  "reviewers_terminal_collected": 10,
+  "peer_jobs_started": 0,
+  "validator_selected_findings": 0,
+  "report": "review.json"
+}

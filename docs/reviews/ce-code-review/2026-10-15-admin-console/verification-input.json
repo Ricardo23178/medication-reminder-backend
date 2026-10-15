@@ -1,0 +1,53 @@
+{
+  "source": "Existing final surefire reports; not rerun by reviewer",
+  "suites": [
+    {
+      "suite": "com.medreminder.medicationbackend.AdminApiIntegrationTest",
+      "tests": 12,
+      "errors": 0,
+      "failures": 0,
+      "skipped": 0
+    },
+    {
+      "suite": "com.medreminder.medicationbackend.CollaborationApiIntegrationTest",
+      "tests": 14,
+      "errors": 0,
+      "failures": 0,
+      "skipped": 0
+    },
+    {
+      "suite": "com.medreminder.medicationbackend.MedicationBackendApplicationTests",
+      "tests": 4,
+      "errors": 0,
+      "failures": 0,
+      "skipped": 0
+    },
+    {
+      "suite": "com.medreminder.medicationbackend.service.CurrentProgressRegressionTest",
+      "tests": 13,
+      "errors": 0,
+      "failures": 0,
+      "skipped": 0
+    },
+    {
+      "suite": "com.medreminder.medicationbackend.service.NotificationDispatcherTest",
+      "tests": 6,
+      "errors": 0,
+      "failures": 0,
+      "skipped": 0
+    }
+  ],
+  "totals": {
+    "tests": 49,
+    "errors": 0,
+    "failures": 0,
+    "skipped": 0
+  },
+  "caller_validation": [
+    "8 Node tests passed",
+    "Vite build succeeded with existing ElementPlus approximately1MB chunk warning",
+    "Chrome1440/390 fixture flows passed; not real-browser-to-DB end to end",
+    "Runtime health healthy; anonymous admin/me HTTP401"
+  ],
+  "lint": "No standalone Checkstyle/Spotless/ESLint lint task configured; compile/test/node --check/git diff --check are not full lint."
+}

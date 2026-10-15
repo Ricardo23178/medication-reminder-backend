@@ -1,0 +1,1926 @@
+diff --git a/.gitignore b/.gitignore
+index 667aaef..d0d5293 100644
+--- a/.gitignore
++++ b/.gitignore
+@@ -24,10 +24,16 @@ target/
+ /nbbuild/
+ /dist/
+ /nbdist/
+ /.nb-gradle/
+ build/
+ !**/src/main/**/build/
+ !**/src/test/**/build/
+ 
+ ### VS Code ###
+ .vscode/
++
++# Vue administration workspace
++admin-web/node_modules/
++admin-web/dist/
++admin-web/test-results/
++admin-web/playwright-report/
+diff --git a/README.md b/README.md
+index 7b5bf80..0a4a447 100644
+--- a/README.md
++++ b/README.md
+@@ -18,20 +18,22 @@
+ | Lombok | — | 减少样板代码 |
+ 
+ ## 核心特性
+ 
+ - **JWT 无状态认证**：登录签发 token，`AuthInterceptor` 拦截校验，`ThreadLocal` 传递当前用户
+ - **越权防护**：所有数据操作按 `user_id` 过滤（`id + user_id` 双条件），防止横向越权
+ - **状态机建模**：计划 / 提醒任务 / 服药记录 / 异常事件 四套状态机
+ - **定时任务**：`@Scheduled` 每 5 分钟自动生成当日提醒、扫描超时未确认任务；变更计划会取消待执行任务
+ - **家属协同**：owner 发起邀请码 → family 凭码接受，授权权在数据主体手里，解绑后权限即时失效
+ - **幂等设计**：确认服药、生成任务、异常事件均有唯一键兜底，防重复
++- **Web管理后台**：`admin-web/` 提供Vue 3管理端，支持用户状态、字典、通知模板、投递参数、异常与通知状态和操作审计，见[后台说明](docs/admin-console.md)。
++- **实时账号校验**：禁用账号的旧JWT后续请求会被拒绝；管理员权限以数据库当前角色为准。
+ 
+ ## 接口清单（10 个业务接口）
+ 
+ | 模块 | 方法 | 路径 |
+ |------|------|------|
+ | 认证 | POST | `/api/auth/register` |
+ | 认证 | POST | `/api/auth/login` |
+ | 药品 | GET/POST/PUT/DELETE | `/api/medicines` |
+ | 计划 | GET/POST | `/api/plans` |
+ | 计划 | POST | `/api/plans/{id}/pause` `/resume` |
+diff --git a/docs/current-progress-optimization.md b/docs/current-progress-optimization.md
+index 4cb3ed8..08fd449 100644
+--- a/docs/current-progress-optimization.md
++++ b/docs/current-progress-optimization.md
+@@ -47,10 +47,16 @@ HarmonyOS已在英文路径副本完成未签名HAP编译，并成功安装、
+ 
+ ## 2026-10-15 家属协同与消息中心
+ 
+ 经确认，本阶段先补齐家属异常协同和站内消息，再考虑后台管理与多端适配。新增消息列表、未读数、详情、已读/全部已读、游标分页，以及家属知晓、关闭和关闭历史。异常通知按有效授权去重入队，支持有限失败重试；解绑会撤销旧通知，快速重新绑定也不会恢复旧消息。
+ 
+ 已在 Pura 90 模拟器跑通登录、消息查看与已读、家属知晓、关闭确认、历史查看、解绑后消息与异常不可访问。联调发现并修复了从家属异常返回消息详情时参数丢失的问题；返回后仍重新查询并校验权限。临时验收账号、业务数据和本地令牌文件已清理，应用退出测试登录。
+ 
+ 本阶段消息投递为站内消息中心发布，不代表厂商推送或短信到达手机；后台管理、关怀消息和真机/平板适配尚未推进。实现与接口说明保存在后端`docs/family-collaboration-and-inbox.md`，详细验收记录见`docs/reports/2026-10-15-family-inbox-acceptance.md`。
+ 
+ 本阶段最终后端34项测试全部通过，包含13项真实MySQL接口/投递测试；前端7项实际页面方法的异步切页检查通过，最终HAP编译成功。复核发现的跨实例在途请求旧状态和关闭后待发消息测试缺口均已处理。上述日期之前关于仅有待发送记录、尚无消息中心及未完成登录交互的描述属于上一阶段，现以本节与验收记录为准。
++
++## 2026-10-15 Web 管理后台
++
++按设计方案继续第12周的基础后台：新增Vue 3管理端，包含运行概览、用户状态、字典、通知模板、投递参数、异常事件、通知状态和操作审计。配置实际用于新入队通知和下一批投递，不改写历史消息；所有敏感修改需填写原因并留审计，配置版本冲突拒绝覆盖。管理员不默认查看患者用药明细，也不代替授权家属处理异常。
++
++每个业务请求重新校验数据库账号状态，禁用账号的旧JWT后续请求被拒；后台以数据库当前角色鉴权。管理表通过幂等增量脚本创建，未修改既有业务表结构。后端48项测试、Web端8项Node测试及1440px/390px真实Chrome夹具交互通过，Vue生产构建完成；独立lint未配置，构建分块体积提示与部署限制见后端`docs/admin-console.md`和`admin-web/README.md`。
+diff --git a/src/main/java/com/medreminder/medicationbackend/config/AuthInterceptor.java b/src/main/java/com/medreminder/medicationbackend/config/AuthInterceptor.java
+index 3f3fa21..e567a6e 100644
+--- a/src/main/java/com/medreminder/medicationbackend/config/AuthInterceptor.java
++++ b/src/main/java/com/medreminder/medicationbackend/config/AuthInterceptor.java
+@@ -1,55 +1,77 @@
+ package com.medreminder.medicationbackend.config;
+ 
+ import com.medreminder.medicationbackend.common.UserContext;
+ import com.medreminder.medicationbackend.util.JwtUtil;
++import com.medreminder.medicationbackend.mapper.UserMapper;
+ import io.jsonwebtoken.Claims;
+ import jakarta.servlet.http.HttpServletRequest;
+ import jakarta.servlet.http.HttpServletResponse;
+ import org.springframework.stereotype.Component;
+ import org.springframework.web.servlet.HandlerInterceptor;
++import org.springframework.web.method.HandlerMethod;
++import com.medreminder.medicationbackend.admin.AdminController;
+ 
+ /**
+  * 登录校验拦截器。
+  * 规则：请求头必须带 Authorization: Bearer <token>，token 有效才放行，
+  *      并把用户身份写入 UserContext，供后续业务读取。
+  * 放行哪些路径由 WebConfig 配置（登录、健康检查免检）。
+  */
+ @Component
+ public class AuthInterceptor implements HandlerInterceptor {
+ 
+     private final JwtUtil jwtUtil;
++    private final UserMapper users;
+ 
+-    public AuthInterceptor(JwtUtil jwtUtil) {
++    public AuthInterceptor(JwtUtil jwtUtil, UserMapper users) {
+         this.jwtUtil = jwtUtil;
++        this.users = users;
+     }
+ 
+     @Override
+     public boolean preHandle(HttpServletRequest request, HttpServletResponse response, Object handler)
+             throws Exception {
++        UserContext.clear();
+         String auth = request.getHeader("Authorization");
+         if (auth == null || !auth.startsWith("Bearer ")) {
+             writeUnauthorized(response, "未登录或缺少凭证");
+             return false;
+         }
+ 
+         String token = auth.substring(7).trim();
++        Long userId;
+         try {
+             Claims claims = jwtUtil.parse(token);
+-            Long userId = Long.valueOf(claims.getSubject());
+-            String role = claims.get("role", String.class);
+-            UserContext.set(new UserContext.CurrentUser(userId, role));
+-            return true; // 校验通过，放行
++            userId = Long.valueOf(claims.getSubject());
+         } catch (Exception e) {
+             writeUnauthorized(response, "登录已过期或凭证无效");
+             return false;
+         }
++        // Current database identity is authoritative: disabling/deleting a user revokes old JWTs.
++        var user = users.selectById(userId);
++        if (user == null || !Integer.valueOf(1).equals(user.getStatus())) {
++            writeUnauthorized(response, "账号不可用，请重新登录或联系管理员");
++            return false;
++        }
++        String path = request.getRequestURI().substring(request.getContextPath().length());
++        boolean adminHandler = handler instanceof HandlerMethod method
++                && AdminController.class.isAssignableFrom(method.getBeanType());
++        if ((adminHandler || path.equals("/api/admin") || path.startsWith("/api/admin/")) && !"ADMIN".equals(user.getRole())) {
++            response.setStatus(HttpServletResponse.SC_FORBIDDEN);
++            response.setCharacterEncoding("UTF-8");
++            response.setContentType("application/json;charset=UTF-8");
++            response.getWriter().write("{\"code\":403,\"message\":\"仅平台管理员可访问\"}");
++            return false;
++        }
++        UserContext.set(new UserContext.CurrentUser(userId, user.getRole()));
++        return true;
+     }
+ 
+     @Override
+     public void afterCompletion(HttpServletRequest request, HttpServletResponse response,
+                                 Object handler, Exception ex) {
+         UserContext.clear(); // 请求结束清 ThreadLocal，防串号
+     }
+ 
+     private void writeUnauthorized(HttpServletResponse response, String message) throws Exception {
+         response.setStatus(HttpServletResponse.SC_UNAUTHORIZED);
+diff --git a/src/main/java/com/medreminder/medicationbackend/service/AuthService.java b/src/main/java/com/medreminder/medicationbackend/service/AuthService.java
+index e46eb03..f442871 100644
+--- a/src/main/java/com/medreminder/medicationbackend/service/AuthService.java
++++ b/src/main/java/com/medreminder/medicationbackend/service/AuthService.java
+@@ -1,13 +1,14 @@
+ package com.medreminder.medicationbackend.service;
+ 
+ import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
++import com.baomidou.mybatisplus.core.conditions.update.LambdaUpdateWrapper;
+ import com.medreminder.medicationbackend.common.Result;
+ import com.medreminder.medicationbackend.dto.RegisterRequest;
+ import com.medreminder.medicationbackend.entity.User;
+ import com.medreminder.medicationbackend.mapper.UserMapper;
+ import com.medreminder.medicationbackend.util.JwtUtil;
+ import org.springframework.dao.DuplicateKeyException;
+ import org.springframework.security.crypto.bcrypt.BCryptPasswordEncoder;
+ import org.springframework.stereotype.Service;
+ 
+ import java.time.LocalDateTime;
+@@ -42,22 +43,22 @@ public class AuthService {
+                 new LambdaQueryWrapper<User>().eq(User::getAccount, account));
+ 
+         if (user == null || !passwordEncoder.matches(password, user.getPasswordHash())) {
+             return Result.error(Result.UNAUTHORIZED, "账号或密码错误");
+         }
+         if (user.getStatus() != null && user.getStatus() == 0) {
+             return Result.error(Result.UNAUTHORIZED, "账号已被禁用，请联系管理员");
+         }
+ 
+         // 更新最近登录时间
+-        user.setLastLoginAt(LocalDateTime.now());
+-        userMapper.updateById(user);
++        userMapper.update(null, new LambdaUpdateWrapper<User>().eq(User::getId, user.getId())
++                .set(User::getLastLoginAt, LocalDateTime.now()));
+ 
+         return Result.ok(buildAuthData(user));
+     }
+ 
+     // ==================== 注册 ====================
+ 
+     /**
+      * 注册新用户。返回结构与登录一致（token + user），即「注册即登录」。
+      *
+      * 关键设计：
+diff --git a/src/main/java/com/medreminder/medicationbackend/service/NotificationDispatcher.java b/src/main/java/com/medreminder/medicationbackend/service/NotificationDispatcher.java
+index 97316c4..9541678 100644
+--- a/src/main/java/com/medreminder/medicationbackend/service/NotificationDispatcher.java
++++ b/src/main/java/com/medreminder/medicationbackend/service/NotificationDispatcher.java
+@@ -1,43 +1,48 @@
+ package com.medreminder.medicationbackend.service;
+ 
+ import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+ import com.medreminder.medicationbackend.entity.AbnormalEvent;
+ import com.medreminder.medicationbackend.entity.Notification;
+ import com.medreminder.medicationbackend.mapper.AbnormalEventMapper;
+ import com.medreminder.medicationbackend.mapper.NotificationMapper;
++import com.medreminder.medicationbackend.admin.ConsoleSettings;
+ import org.slf4j.Logger;
+ import org.slf4j.LoggerFactory;
+ import org.springframework.stereotype.Service;
+ 
+ /** SENT仅表示已发布到站内消息中心，不表示设备收到系统推送或家属已读。 */
+ @Service
+ public class NotificationDispatcher {
+     private static final Logger log = LoggerFactory.getLogger(NotificationDispatcher.class);
+     private final NotificationMapper notifications;
+     private final AbnormalEventMapper events;
+     private final NotificationService service;
+     private final NotificationDeliveryService delivery;
++    private final ConsoleSettings settings;
+ 
+     public NotificationDispatcher(NotificationMapper notifications, AbnormalEventMapper events,
+-                                  NotificationService service, NotificationDeliveryService delivery) {
++                                  NotificationService service, NotificationDeliveryService delivery, ConsoleSettings settings) {
+         this.notifications = notifications;
+         this.events = events;
+         this.service = service;
+         this.delivery = delivery;
++        this.settings = settings;
+     }
+ 
+     public void dispatchPending() {
++        var policy = settings.deliveryPolicy();
++        if (policy.paused()) return;
+         for (Notification message : notifications.selectList(new LambdaQueryWrapper<Notification>()
+                 .in(Notification::getSendStatus, "PENDING", "FAILED")
+                 .lt(Notification::getRetryCount, NotificationDeliveryService.MAX_ATTEMPTS)
+-                .orderByAsc(Notification::getId).last("LIMIT 100"))) {
++                .orderByAsc(Notification::getId).last("LIMIT " + policy.batchSize()))) {
+             try {
+                 // 兼容上一阶段只有本人待发送消息的存量数据；家属资格按事件发生时刻检查。
+                 if ("ABNORMAL_EVENT".equals(message.getBizType()) && message.getBizId() != null) {
+                     AbnormalEvent event = events.selectById(message.getBizId());
+                     if (event != null && event.getUserId().equals(message.getReceiverId())) {
+                         service.queueAbnormalEvent(event);
+                     }
+                 }
+                 delivery.publish(message.getId());
+             } catch (RuntimeException failure) {
+diff --git a/src/main/java/com/medreminder/medicationbackend/service/NotificationService.java b/src/main/java/com/medreminder/medicationbackend/service/NotificationService.java
+index d02007f..53d4e39 100644
+--- a/src/main/java/com/medreminder/medicationbackend/service/NotificationService.java
++++ b/src/main/java/com/medreminder/medicationbackend/service/NotificationService.java
+@@ -2,65 +2,70 @@ package com.medreminder.medicationbackend.service;
+ 
+ import com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper;
+ import com.medreminder.medicationbackend.entity.AbnormalEvent;
+ import com.medreminder.medicationbackend.entity.FamilyRelation;
+ import com.medreminder.medicationbackend.entity.Notification;
+ import com.medreminder.medicationbackend.mapper.AbnormalEventMapper;
+ import com.medreminder.medicationbackend.mapper.FamilyRelationMapper;
+ import com.medreminder.medicationbackend.mapper.NotificationMapper;
+ import com.medreminder.medicationbackend.vo.NotificationPageVO;
+ import com.medreminder.medicationbackend.vo.NotificationVO;
++import com.medreminder.medicationbackend.admin.ConsoleSettings;
+ import org.springframework.stereotype.Service;
+ import org.springframework.transaction.annotation.Transactional;
+ 
+ import java.time.LocalDateTime;
+ import java.util.HashSet;
+ import java.util.List;
+ import java.util.Map;
+ import java.util.Set;
+ import java.util.function.Function;
+ import java.util.stream.Collectors;
+ 
+ @Service
+ public class NotificationService {
+     private final NotificationMapper notifications;
+     private final AbnormalEventMapper events;
+     private final FamilyRelationMapper relations;
++    private final ConsoleSettings settings;
+ 
+     public NotificationService(NotificationMapper notifications, AbnormalEventMapper events,
+-                               FamilyRelationMapper relations) {
++                               FamilyRelationMapper relations, ConsoleSettings settings) {
+         this.notifications = notifications;
+         this.events = events;
+         this.relations = relations;
++        this.settings = settings;
+     }
+ 
+     /** 与异常事件同事务入队；锁定事件串行化，避免重复扫描产生重复家属消息。 */
+     @Transactional
+     public void queueAbnormalEvent(AbnormalEvent source) {
+         AbnormalEvent event = events.selectOne(new LambdaQueryWrapper<AbnormalEvent>()
+                 .eq(AbnormalEvent::getId, source.getId()).last("FOR UPDATE"));
+         if (event == null || "CLOSED".equals(event.getStatus())) return;
+         Set<Long> receivers = new HashSet<>();
+         for (Notification existing : notifications.selectList(new LambdaQueryWrapper<Notification>()
+                 .select(Notification::getReceiverId)
+                 .eq(Notification::getBizType, "ABNORMAL_EVENT").eq(Notification::getBizId, event.getId()))) {
+             receivers.add(existing.getReceiverId());
+         }
+-        if (receivers.add(event.getUserId())) create(event, event.getUserId(), false);
++        if (receivers.add(event.getUserId())) create(event, event.getUserId(), false, settings.template(false));
++        ConsoleSettings.MessageTemplate familyTemplate = null;
+         for (FamilyRelation relation : relations.selectList(new LambdaQueryWrapper<FamilyRelation>()
+                 .eq(FamilyRelation::getOwnerUserId, event.getUserId())
+                 .eq(FamilyRelation::getRelationStatus, "ACTIVE"))) {
+             // 新绑定不补发绑定前的历史告警，也不向未授予异常权限的家属投递。
+             if (relation.getFamilyUserId() != null && FamilyService.hasAbnormalScope(relation.getScope())
+                     && relation.getBindTime() != null && !relation.getBindTime().isAfter(event.getOccurredAt())
+                     && receivers.add(relation.getFamilyUserId())) {
+-                create(event, relation.getFamilyUserId(), true);
++                if (familyTemplate == null) familyTemplate = settings.template(true);
++                create(event, relation.getFamilyUserId(), true, familyTemplate);
+             }
+         }
+     }
+ 
+     public NotificationPageVO list(Long userId, boolean unreadOnly, Long beforeId, int limit) {
+         if (limit < 1 || limit > 50 || (beforeId != null && beforeId < 1)) {
+             throw new IllegalArgumentException("每页数量应为1至50，消息游标必须为正数");
+         }
+         List<Notification> rows = notifications.selectVisible(userId, unreadOnly, beforeId, limit + 1);
+         boolean hasMore = rows.size() > limit;
+@@ -88,27 +93,26 @@ public class NotificationService {
+     }
+ 
+     public boolean read(Long userId, Long id) {
+         // MySQL 默认返回匹配行数，已读消息重试仍成功；权限条件与查询完全一致。
+         return notifications.markVisibleRead(userId, id) > 0
+                 || notifications.selectVisibleById(userId, id) != null;
+     }
+ 
+     public int readAll(Long userId) { return notifications.markAllVisibleRead(userId); }
+ 
+-    private void create(AbnormalEvent event, Long receiver, boolean family) {
++    private void create(AbnormalEvent event, Long receiver, boolean family, ConsoleSettings.MessageTemplate template) {
+         Notification message = new Notification();
+         message.setReceiverId(receiver);
+         message.setType(family ? "FAMILY_ALERT" : "SYSTEM");
+-        message.setTitle(family ? "家属用药未确认提醒" : "用药未确认提醒");
+-        message.setContent(family ? "您关注的家人有用药提醒超时未确认，请查看授权范围内的异常事件。"
+-                : "您有用药提醒超时未确认，系统已记录异常。这不代表医学意义上的漏服。");
++        message.setTitle(template.title());
++        message.setContent(template.content());
+         message.setBizType("ABNORMAL_EVENT");
+         message.setBizId(event.getId());
+         message.setReadFlag(0);
+         message.setSendStatus("PENDING");
+         message.setRetryCount(0);
+         message.setCreateTime(LocalDateTime.now());
+         notifications.insert(message);
+     }
+ 
+     private NotificationVO toVO(Long userId, Notification message, AbnormalEvent event) {
+diff --git a/src/test/java/com/medreminder/medicationbackend/CollaborationApiIntegrationTest.java b/src/test/java/com/medreminder/medicationbackend/CollaborationApiIntegrationTest.java
+index 97fb73a..be410c6 100644
+--- a/src/test/java/com/medreminder/medicationbackend/CollaborationApiIntegrationTest.java
++++ b/src/test/java/com/medreminder/medicationbackend/CollaborationApiIntegrationTest.java
+@@ -17,36 +17,61 @@ import java.time.LocalDate;
+ import java.time.LocalDateTime;
+ import java.util.UUID;
+ 
+ import static org.junit.jupiter.api.Assertions.*;
+ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.*;
+ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
+ 
+ /** Opt-in real MySQL verification. Every fixture and API write rolls back with its test. */
+ @EnabledIfEnvironmentVariable(named = "RUN_MYSQL_INTEGRATION_TESTS", matches = "true")
+ @SpringBootTest(properties = {"reminder.scheduling.enabled=false", "notification.delivery.enabled=false",
+-        "app.initialize-admin=false"})
++        "app.initialize-admin=false", "app.initialize-console=true"})
+ @AutoConfigureMockMvc
+ @Transactional
+ class CollaborationApiIntegrationTest {
+     @Autowired MockMvc mvc;
+     @Autowired JwtUtil jwt;
+     @Autowired UserMapper users;
+     @Autowired NotificationMapper notifications;
+     @Autowired AbnormalEventMapper events;
+     @Autowired FamilyRelationMapper relations;
+     @Autowired MedicineMapper medicines;
+     @Autowired PlanMapper plans;
+     @Autowired PlanTimeMapper times;
+     @Autowired RemindTaskMapper tasks;
+     @Autowired NotificationService inbox;
+     @Autowired NotificationDeliveryService delivery;
++    @Autowired org.springframework.jdbc.core.JdbcTemplate jdbc;
++
++    @Test
++    void configuredTemplatesApplyOnlyToNewlyQueuedMessages() throws Exception {
++        Long owner=user();
++        User admin=users.selectById(user()); admin.setRole("ADMIN"); users.updateById(admin);
++        AbnormalEvent first=event(owner);
++        inbox.queueAbnormalEvent(first);
++        var original=notifications.selectOne(new com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper<Notification>()
++                .eq(Notification::getBizId,first.getId()).eq(Notification::getReceiverId,owner));
++        var setting=jdbc.queryForMap("select id,version from admin_setting where code='notification.owner'");
++        String value="{\"title\":\"配置后的新标题\",\"content\":\"配置后的新正文\"}";
++        String body=new com.fasterxml.jackson.databind.ObjectMapper().writeValueAsString(
++                java.util.Map.of("value",value,"version",setting.get("version"),"reason","验证新通知模板生效"));
++        mvc.perform(put("/api/admin/settings/{id}",setting.get("id"))
++                        .header("Authorization","Bearer "+jwt.generate(admin.getId(),"ADMIN"))
++                        .contentType("application/json").content(body)).andExpect(jsonPath("$.code").value(200));
++        AbnormalEvent second=event(owner);
++        inbox.queueAbnormalEvent(second);
++        var latest=notifications.selectOne(new com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper<Notification>()
++                .eq(Notification::getBizId,second.getId()).eq(Notification::getReceiverId,owner));
++        assertEquals("配置后的新标题",latest.getTitle());
++        assertEquals("配置后的新正文",latest.getContent());
++        assertEquals(original.getTitle(),notifications.selectById(original.getId()).getTitle());
++    }
+ 
+     @Test
+     void eventFanoutIsIdempotentAndExcludesLateOrInsufficientGrants() {
+         Long owner = user(), family = user(), planOnly = user(), late = user();
+         AbnormalEvent event = event(owner);
+         relation(owner, family, "PLAN_STATUS,ABNORMAL_EVENT");
+         relation(owner, planOnly, "PLAN_STATUS");
+         FamilyRelation lateRelation = relation(owner, late, "ABNORMAL_EVENT");
+         lateRelation.setBindTime(LocalDateTime.now());
+         relations.updateById(lateRelation);
+diff --git a/src/test/java/com/medreminder/medicationbackend/MedicationBackendApplicationTests.java b/src/test/java/com/medreminder/medicationbackend/MedicationBackendApplicationTests.java
+index 852d4aa..d2028a2 100644
+--- a/src/test/java/com/medreminder/medicationbackend/MedicationBackendApplicationTests.java
++++ b/src/test/java/com/medreminder/medicationbackend/MedicationBackendApplicationTests.java
+@@ -1,29 +1,40 @@
+ package com.medreminder.medicationbackend;
+ 
+ import org.junit.jupiter.api.Test;
+ import org.springframework.boot.test.context.SpringBootTest;
+ import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
+ import org.springframework.beans.factory.annotation.Autowired;
+ import org.springframework.test.web.servlet.MockMvc;
+ import com.medreminder.medicationbackend.util.JwtUtil;
+ import java.util.List;
++import org.junit.jupiter.api.BeforeEach;
++import org.springframework.test.context.bean.override.mockito.MockitoBean;
++import com.medreminder.medicationbackend.mapper.UserMapper;
++import com.medreminder.medicationbackend.entity.User;
++import static org.mockito.Mockito.when;
+ import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.*;
+ import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
+ 
+-@SpringBootTest(properties = {"reminder.scheduling.enabled=false", "notification.delivery.enabled=false", "app.initialize-admin=false"})
++@SpringBootTest(properties = {"reminder.scheduling.enabled=false", "notification.delivery.enabled=false", "app.initialize-admin=false", "app.initialize-console=false"})
+ @AutoConfigureMockMvc
+ class MedicationBackendApplicationTests {
+     @Autowired
+     MockMvc mvc;
+     @Autowired
+     JwtUtil jwt;
++    @MockitoBean UserMapper users;
++
++    @BeforeEach void activeUser() {
++        var user=new User(); user.setId(1L); user.setStatus(1); user.setRole("USER");
++        when(users.selectById(1L)).thenReturn(user);
++    }
+ 
+     @Test
+     void contextLoads() {
+     }
+ 
+     @Test
+     void unauthenticatedBusinessRequestIsRejected() throws Exception {
+         mvc.perform(get("/api/reminders/today"))
+                 .andExpect(status().isUnauthorized());
+     }
+diff --git a/src/test/java/com/medreminder/medicationbackend/service/NotificationDispatcherTest.java b/src/test/java/com/medreminder/medicationbackend/service/NotificationDispatcherTest.java
+index 514714d..55777c3 100644
+--- a/src/test/java/com/medreminder/medicationbackend/service/NotificationDispatcherTest.java
++++ b/src/test/java/com/medreminder/medicationbackend/service/NotificationDispatcherTest.java
+@@ -1,32 +1,49 @@
+ package com.medreminder.medicationbackend.service;
+ 
+ import com.baomidou.mybatisplus.core.conditions.Wrapper;
+ import com.medreminder.medicationbackend.entity.AbnormalEvent;
+ import com.medreminder.medicationbackend.entity.Notification;
+ import com.medreminder.medicationbackend.mapper.AbnormalEventMapper;
+ import com.medreminder.medicationbackend.mapper.NotificationMapper;
+ import org.junit.jupiter.api.Test;
++import org.junit.jupiter.api.BeforeEach;
++import com.medreminder.medicationbackend.admin.ConsoleSettings;
+ import org.springframework.dao.TransientDataAccessResourceException;
+ 
+ import java.util.List;
+ 
+ import static org.mockito.ArgumentMatchers.*;
+ import static org.mockito.Mockito.*;
+ 
+ @SuppressWarnings("unchecked")
+ class NotificationDispatcherTest {
+     final NotificationMapper notifications = mock(NotificationMapper.class);
+     final AbnormalEventMapper events = mock(AbnormalEventMapper.class);
+     final NotificationService inbox = mock(NotificationService.class);
+     final NotificationDeliveryService delivery = mock(NotificationDeliveryService.class);
+-    final NotificationDispatcher dispatcher = new NotificationDispatcher(notifications, events, inbox, delivery);
++    final ConsoleSettings settings = mock(ConsoleSettings.class);
++    final NotificationDispatcher dispatcher = new NotificationDispatcher(notifications, events, inbox, delivery, settings);
++    @BeforeEach void defaultPolicy() { when(settings.deliveryPolicy()).thenReturn(new ConsoleSettings.DeliveryPolicy(false,100)); }
++
++    @Test void pausedDeliveryLeavesPendingRowsUntouched() {
++        when(settings.deliveryPolicy()).thenReturn(new ConsoleSettings.DeliveryPolicy(true,25));
++        dispatcher.dispatchPending();
++        verifyNoInteractions(notifications,delivery);
++    }
++
++    @Test void batchSizeIsReadFromCurrentConfiguration() {
++        when(settings.deliveryPolicy()).thenReturn(new ConsoleSettings.DeliveryPolicy(false,25));
++        when(notifications.selectList(any(Wrapper.class))).thenReturn(List.of());
++        dispatcher.dispatchPending();
++        verify(notifications).selectList(argThat((Wrapper<Notification> query) -> query.getSqlSegment().endsWith("LIMIT 25")));
++    }
+ 
+     @Test
+     void publicationFailureRecordsAnAttemptAndContinuesWithNextMessage() {
+         when(notifications.selectList(any(Wrapper.class))).thenReturn(List.of(message(1L), message(2L)));
+         doThrow(new TransientDataAccessResourceException("simulated database outage"))
+                 .when(delivery).publish(1L);
+         dispatcher.dispatchPending();
+         verify(delivery).recordFailure(1L);
+         verify(delivery).publish(2L);
+         verify(delivery, never()).recordFailure(2L);
+
+--- /dev/null
++++ b/admin-web/README.md
+@@ -0,0 +1,72 @@
++# 用药协同管理后台
++
++Vue 3 + Element Plus 独立 Web 管理端。开发与部署入口均为 `/admin/`，普通用户账号无权进入后台；前端显示内容前必须通过 `GET /api/admin/me` 验证 `ADMIN`，后端仍负责每个接口的鉴权。
++
++## 本地运行
++
++前置条件：Node.js 22.12+（开发验证环境为 26.7），npm，以及运行在 `127.0.0.1:8080` 的 Spring Boot 后端。使用已有管理员账号；页面不预填口令。
++
++```powershell
++cd D:\HuaweiMoveData\Users\86186\Desktop\毕业设计\medication-backend\admin-web
++npm ci
++npm run dev
++```
++
++访问 `http://127.0.0.1:5173/admin/`。Vite 仅监听 loopback，端口占用会直接报错，不会悄悄切换端口。`/api` 由开发服务器代理到 `http://127.0.0.1:8080`。
++
++## 构建与部署
++
++```powershell
++npm test
++npm run build
++npm run preview
++```
++
++构建产物只在本目录 `dist/`。预览地址为 `http://127.0.0.1:4173/admin/`；预览服务器不提供开发代理，需要相同来源的 `/api` 服务才能联调。正式环境将 `dist/` 的内容挂载到 `/admin/`，并将同源 `/api/` 反向代理到后端。Vite 开发服务器和 preview 仅用于本地调试。
++
++Nginx 配置示意（替换静态文件绝对路径）：
++
++```nginx
++location /admin/ {
++    alias /srv/medication/admin-web/dist/;
++    index index.html;
++}
++location /api/ {
++    proxy_pass http://127.0.0.1:8080;
++    proxy_set_header Host $host;
++    proxy_set_header X-Real-IP $remote_addr;
++}
++```
++
++页面使用内部视图切换，没有浏览器路径路由；访问 `/admin/` 即可。对外部署应在反向代理配置 HTTPS。
++
++## 页面与数据
++
++- 运行概览：用户、待处理异常、待投递/失败通知及提醒任务指标。
++- 用户管理：按账号/昵称与状态查询，管理员账号保护，启用/禁用须填写 3～200 字原因。
++- 字典配置：`event.labels`，固定三个异常编码对应 1～40 字展示名。异常列表读取这项配置；缺少配置时使用内置中文名称。
++- 通知模板：`notification.owner`、`notification.family`，JSON 对象包含 `title`（1～80 字）与 `content`（1～500 字）。保存后仅影响新入队消息，不改写已有通知。模板为纯文本，不执行表达式或占位符替换。
++- 系统参数：`delivery.paused` 为 `true`/`false`；`delivery.batch-size` 为 1～100 整数，实际控制后端站内通知投递。
++- 异常任务：只读状态列表，后台不代替授权家属知晓/关闭异常。
++- 通知投递：只读投递状态、重试次数与时间，不展示接收人和消息正文。
++- 操作审计：成功的用户状态和配置变更，展开查看变更前后值。
++
++预设配置只能编辑值，不提供新增、删除。配置保存使用版本号；409 冲突会关闭旧编辑窗口并重新加载，必须基于新版本重新编辑，不自动覆盖。
++
++## 会话、并发与验证
++
++令牌仅保存在当前浏览器页的 `sessionStorage`。刷新后重新请求 `/admin/me`；当前会话 401 清除令牌、数据与编辑内容并回登录；403 展示权限拒绝。退出同样清空业务内容。页面不使用 `v-html`，审计值和正文按文本转义。
++
++API helper 使用会话 generation 拒绝旧响应（包含旧会话的迟到 401/403），视图读取使用独立版本号。变更提交期间禁止导航、分页、重复提交和退出，直到保存与当前页刷新完成。切换页面或发起新查询后，旧读取不能覆盖新页面。
++
++`npm test` 使用 Node 内置测试运行器，无浏览器依赖，覆盖旧 401 不能清除新会话、登录/恢复均独立校验管理员权限、并发登录隔离、非 JSON 401 清凭证、旧视图失效及保存互斥，以及配置真实值格式与边界。开发时先运行测试取得缺少 API helper 的失败结果，再实现 helper 得到通过结果；执行记录见同目录 `test/evidence.md`。这些单元测试不能代替后端权限验证或真实浏览器交互验收。
++
++本地启动开发服务器后，可用已安装的Chrome运行真实页面验收：
++
++```powershell
++node test/browser-smoke.mjs
++```
++
++默认使用Windows标准Chrome安装路径；可用 `CHROME_PATH` 与 `ADMIN_URL` 环境变量覆盖。脚本启动隐藏的独立浏览器配置目录，拦截API并返回独立验收夹具，不操作真实账号或配置，结束后仅清理本次临时浏览器目录。覆盖用户状态/原因/审计、配置保存与409、字典、401清理、普通用户拒绝及390px页面宽度。服务器权限和数据库语义仍须运行后端集成测试。
++
++当前已通过生产构建；全量Element Plus产生约1MB的JS分块（gzip约339KB），构建仍有分块大小提示。未配置单独ESLint命令；编译、Node检查和浏览器验收不等同于完整lint。
+
+--- /dev/null
++++ b/admin-web/index.html
+@@ -0,0 +1,13 @@
++<!doctype html>
++<html lang="zh-CN">
++  <head>
++    <meta charset="UTF-8" />
++    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
++    <meta name="color-scheme" content="light" />
++    <title>用药协同 · 管理后台</title>
++  </head>
++  <body>
++    <div id="app"></div>
++    <script type="module" src="/src/main.js"></script>
++  </body>
++</html>
+
+--- /dev/null
++++ b/admin-web/package.json
+@@ -0,0 +1,20 @@
++{
++  "name": "medication-admin-web",
++  "version": "1.0.0",
++  "private": true,
++  "type": "module",
++  "scripts": {
++    "dev": "vite",
++    "build": "vite build",
++    "preview": "vite preview --host 127.0.0.1 --port 4173 --strictPort",
++    "test": "node --test test/*.test.js"
++  },
++  "dependencies": {
++    "element-plus": "^2.11.5",
++    "vue": "^3.5.22"
++  },
++  "devDependencies": {
++    "@vitejs/plugin-vue": "^6.0.1",
++    "vite": "^7.1.9"
++  }
++}
+
+--- /dev/null
++++ b/admin-web/src/App.vue
+@@ -0,0 +1,285 @@
++<script setup>
++import { computed, onMounted, reactive } from 'vue'
++import { ElMessage } from 'element-plus'
++import { AdminClient, StaleRequestError, ViewGuard } from './api.js'
++import { validateReason, validateSetting } from './validation.js'
++
++const sections = [
++  { key: 'overview', label: '运行概览', eyebrow: 'OVERVIEW', subtitle: '查看用户规模、异常与通知投递情况' },
++  { key: 'users', label: '用户管理', eyebrow: 'USERS', subtitle: '查询用户与调整账号启用状态' },
++  { key: 'dict', label: '字典配置', eyebrow: 'DICTIONARIES', subtitle: '维护系统预设字典的可用值', category: 'DICT' },
++  { key: 'template', label: '通知模板', eyebrow: 'TEMPLATES', subtitle: '维护站内通知标题和正文模板', category: 'TEMPLATE' },
++  { key: 'param', label: '系统参数', eyebrow: 'PARAMETERS', subtitle: '调整通知投递开关与每批处理数量', category: 'PARAM' },
++  { key: 'events', label: '异常任务', eyebrow: 'EVENTS', subtitle: '查看异常事件流转状态，处理由授权家属完成' },
++  { key: 'notifications', label: '通知投递', eyebrow: 'DELIVERY', subtitle: '查看站内通知投递状态与重试次数' },
++  { key: 'audit-logs', label: '操作审计', eyebrow: 'AUDIT LOG', subtitle: '追溯成功的用户状态与配置变更' },
++]
++const defaultEventLabels = { UNCONFIRMED_TIMEOUT: '超时未确认', CONSECUTIVE_UNCONFIRMED: '连续未确认', PLAN_ENDED_UNFINISHED: '计划结束仍有未完成任务' }
++const state = reactive({ booting: true, loggingIn: false, user: null, denied: false, authError: '', tab: 'overview', rows: [], overview: null, eventLabels: { ...defaultEventLabels }, loading: false, saving: false, error: '', notice: '', page: 1, pageSize: 20, total: 0, keyword: '', status: '', action: '', edit: null })
++const credentials = reactive({ account: '', password: '' })
++const form = reactive({ value: '', reason: '', error: '' })
++const guard = new ViewGuard()
++const client = new AdminClient({ onUnauthorized: () => endSession('登录已过期，请重新登录'), onForbidden: () => endSession('当前账号无后台访问权限', true) })
++const current = computed(() => sections.find(section => section.key === state.tab))
++const isSetting = computed(() => !!current.value.category)
++const locked = computed(() => state.saving)
++const stats = computed(() => [
++  { label: '用户总数', value: state.overview?.totalUsers, unit: '个账号' },
++  { label: '启用用户', value: state.overview?.activeUsers, unit: '个账号' },
++  { label: '待处理异常', value: state.overview?.openEvents, unit: '项事件' },
++  { label: '待投递通知', value: state.overview?.pendingNotifications, unit: '条通知' },
++  { label: '投递失败', value: state.overview?.failedNotifications, unit: '条通知' },
++  { label: '提醒任务', value: state.overview?.totalTasks, unit: '项任务' },
++])
++const statusOptions = computed(() => state.tab === 'users'
++  ? [{ value: '1', label: '已启用' }, { value: '0', label: '已禁用' }]
++  : state.tab === 'events'
++    ? ['OPEN', 'NOTIFIED', 'ACKNOWLEDGED', 'CLOSED'].map(value => ({ value, label: labels[value] }))
++    : ['PENDING', 'SENT', 'FAILED', 'CANCELLED'].map(value => ({ value, label: labels[value] })))
++const columns = computed(() => {
++  if (state.tab === 'users') return [['id', '用户 ID', 90], ['account', '账号', 150], ['nickname', '昵称', 140], ['role', '角色', 110], ['status', '状态', 100], ['createTime', '注册时间', 175], ['lastLoginAt', '最近登录', 175]]
++  if (isSetting.value) return [['code', '配置编码', 220], ['name', '名称', 150], ['description', '说明', 220], ['value', '当前值', 260], ['version', '版本', 80], ['updateTime', '更新时间', 175]]
++  if (state.tab === 'events') return [['id', '事件 ID', 100], ['type', '异常类型', 170], ['status', '状态', 115], ['occurredAt', '发生时间', 175], ['notifiedAt', '通知时间', 175], ['acknowledgedAt', '知晓时间', 175], ['closedAt', '关闭时间', 175]]
++  if (state.tab === 'notifications') return [['id', '通知 ID', 100], ['type', '通知类型', 160], ['bizType', '业务类型', 160], ['sendStatus', '投递状态', 115], ['retryCount', '重试次数', 100], ['createTime', '创建时间', 175], ['sentAt', '投递时间', 175]]
++  return [['id', '审计 ID', 95], ['operatorId', '操作人 ID', 110], ['action', '操作', 160], ['targetType', '对象类型', 130], ['targetId', '对象 ID', 100], ['reason', '操作原因', 230], ['createTime', '操作时间', 175]]
++})
++const labels = { ADMIN: '管理员', USER: '普通用户', OPEN: '待处理', NOTIFIED: '已通知', ACKNOWLEDGED: '已知晓', CLOSED: '已关闭', PENDING: '待投递', SENT: '已投递', FAILED: '失败', CANCELLED: '已撤销', USER_STATUS: '调整用户状态', SETTING_UPDATE: '修改系统配置' }
++function display(row, field) {
++  const value = row[field]
++  if (value === null || value === undefined || value === '') return '—'
++  if (field === 'status' && state.tab === 'users') return Number(value) === 1 ? '已启用' : '已禁用'
++  if (field.endsWith('Time') || field.endsWith('At')) return String(value).replace('T', ' ').replace(/\.\d+(?:Z)?$/, '')
++  if (field === 'type' && state.tab === 'events') return state.eventLabels[value] || value
++  if (state.tab === 'notifications' && (field === 'type' || field === 'bizType')) {
++    return { SYSTEM: '系统通知', FAMILY_ALERT: '家属异常通知', ABNORMAL_EVENT: '用药异常' }[value] || value
++  }
++  if (['role', 'status', 'sendStatus', 'action'].includes(field)) return labels[value] || value
++  return value
++}
++function statusType(row, field) {
++  const value = row[field]
++  if (value === 'FAILED' || value === 0) return 'danger'
++  if (['PENDING', 'OPEN'].includes(value)) return 'warning'
++  if (['CANCELLED', 'CLOSED'].includes(value)) return 'info'
++  return 'success'
++}
++function endSession(message = '', denied = false) {
++  client.clear()
++  guard.invalidate()
++  state.user = null
++  state.denied = denied
++  state.authError = message
++  state.rows = []
++  state.overview = null
++  state.eventLabels = { ...defaultEventLabels }
++  state.total = 0
++  state.tab = 'overview'
++  state.page = 1
++  state.keyword = state.status = state.action = ''
++  state.error = state.notice = ''
++  resetEditor()
++  state.loading = false
++  credentials.account = ''
++  credentials.password = ''
++}
++async function login() {
++  if (state.loggingIn || !credentials.account.trim() || !credentials.password) return
++  state.loggingIn = true
++  state.authError = ''
++  state.denied = false
++  try {
++    state.user = await client.signIn(credentials.account.trim(), credentials.password)
++    load()
++  } catch (error) {
++    if (!(error instanceof StaleRequestError)) { state.authError = error.message; state.denied = error.code === 403 }
++  } finally { state.loggingIn = false; credentials.password = '' }
++}
++async function load() {
++  if (!state.user) return
++  const ticket = guard.beginRead()
++  const generation = client.generation
++  const active = () => ticket.current() && generation === client.generation && !!state.user
++  state.loading = true
++  state.error = ''
++  state.rows = []
++  state.overview = null
++  state.total = 0
++  let path
++  if (state.tab === 'overview') path = '/admin/overview'
++  else if (isSetting.value) path = `/admin/settings?category=${current.value.category}`
++  else {
++    const query = new URLSearchParams({ page: String(state.page), pageSize: String(state.pageSize) })
++    if (state.tab === 'users' && state.keyword.trim()) query.set('keyword', state.keyword.trim())
++    if (state.status !== '') query.set('status', state.status)
++    if (state.tab === 'audit-logs' && state.action) query.set('action', state.action)
++    path = `/admin/${state.tab}?${query}`
++  }
++  try {
++    const [data, dictionaries] = await Promise.all([client.request(path), state.tab === 'events' ? client.request('/admin/settings?category=DICT') : Promise.resolve(null)])
++    if (!active()) return
++    if (dictionaries) {
++      const dictionary = dictionaries.find(item => item.code === 'event.labels')
++      if (dictionary && !validateSetting(dictionary, dictionary.value)) state.eventLabels = { ...defaultEventLabels, ...JSON.parse(dictionary.value) }
++    }
++    if (state.tab === 'overview') state.overview = data
++    else if (isSetting.value) state.rows = Array.isArray(data) ? data : []
++    else {
++      state.rows = data.items
++      state.total = data.total
++      state.page = data.page
++      state.pageSize = data.pageSize
++    }
++  } catch (error) { if (active() && !(error instanceof StaleRequestError)) state.error = error.message }
++  finally { if (active()) state.loading = false }
++}
++function navigate(tab) {
++  if (state.tab === tab || !guard.navigate()) return
++  state.tab = tab
++  state.page = 1
++  state.keyword = state.status = state.action = ''
++  state.notice = ''
++  closeEditor()
++  load()
++}
++function search() { if (!locked.value) { state.page = 1; load() } }
++function changePage(page) { if (!locked.value) { state.page = page; load() } }
++function changeSize(size) { if (!locked.value) { state.pageSize = size; state.page = 1; load() } }
++function openEditor(row) {
++  if (locked.value) return
++  state.edit = { ...row, setting: isSetting.value }
++  form.value = String(row.value ?? '')
++  form.reason = form.error = ''
++}
++function resetEditor() { state.edit = null; form.value = form.reason = form.error = '' }
++function closeEditor() { if (!locked.value) resetEditor() }
++function beforeClose(done) { if (!locked.value) { closeEditor(); done() } }
++async function save() {
++  if (!state.edit || locked.value) return
++  const editing = { ...state.edit }
++  form.error = validateReason(form.reason) || (editing.setting ? validateSetting(editing, form.value) : '')
++  if (form.error) return
++  state.saving = true
++  const value = form.value
++  const reason = form.reason.trim()
++  try {
++    await guard.mutate(async () => {
++      try {
++        await client.request(editing.setting ? `/admin/settings/${editing.id}` : `/admin/users/${editing.id}/status`, {
++          method: editing.setting ? 'PUT' : 'PATCH',
++          body: editing.setting ? { value, version: editing.version, reason } : { status: Number(editing.status) === 1 ? 0 : 1, reason },
++        })
++        resetEditor()
++        state.notice = '操作已保存，并记录到操作审计。'
++        ElMessage.success('保存成功')
++        await load()
++      } catch (error) {
++        if (error instanceof StaleRequestError) return
++        if (error.code === 409 && editing.setting && state.user) {
++          resetEditor()
++          state.notice = '配置已被其他管理员修改。已重新加载最新版本，请重新编辑并确认。'
++          ElMessage.warning(state.notice)
++          await load()
++        } else if (state.edit) form.error = error.message
++      }
++    })
++  } finally { state.saving = false }
++}
++onMounted(async () => {
++  try { state.user = await client.restore(); if (state.user) await load() }
++  catch (error) { if (!(error instanceof StaleRequestError)) { state.authError = error.message; state.denied = error.code === 403 } }
++  finally { state.booting = false }
++})
++</script>
++
++<template>
++  <div v-if="state.booting" class="boot-screen" v-loading="true" element-loading-text="正在验证管理员身份…" aria-busy="true"></div>
++  <main v-else-if="!state.user" class="login-page">
++    <section class="login-intro">
++      <span class="brand-mark">药</span>
++      <p class="eyebrow">MEDICATION COLLABORATION</p>
++      <h1>用药协同<br>管理后台</h1>
++      <p>维护系统运行配置，关注异常与通知，<br>让每一次协同都有据可循。</p>
++      <span class="login-note">仅限已授权的管理员账号</span>
++    </section>
++    <section class="login-card">
++      <p class="eyebrow">ADMIN ACCESS</p>
++      <h2>{{ state.denied ? '访问受限' : '管理员登录' }}</h2>
++      <p class="muted">使用管理员账号继续</p>
++      <el-alert v-if="state.authError" :title="state.authError" :type="state.denied ? 'warning' : 'error'" :closable="false" show-icon class="form-alert" />
++      <el-form label-position="top" @submit.prevent="login">
++        <el-form-item label="账号">
++          <el-input v-model="credentials.account" autocomplete="username" maxlength="100" placeholder="请输入管理员账号" :disabled="state.loggingIn" aria-label="管理员账号" />
++        </el-form-item>
++        <el-form-item label="密码">
++          <el-input v-model="credentials.password" type="password" show-password autocomplete="current-password" placeholder="请输入密码" :disabled="state.loggingIn" aria-label="密码" />
++        </el-form-item>
++        <el-button type="primary" native-type="submit" class="login-submit" :loading="state.loggingIn" :disabled="!credentials.account.trim() || !credentials.password">登录后台</el-button>
++      </el-form>
++      <p class="login-footnote">系统将验证账号的后台访问权限</p>
++    </section>
++  </main>
++  <div v-else class="admin-shell">
++    <aside class="sidebar">
++      <div class="brand"><span class="brand-mark small">药</span><div><strong>用药协同</strong><span>系统管理平台</span></div></div>
++      <p class="nav-caption">工作空间</p>
++      <nav aria-label="后台导航">
++        <button v-for="(section, index) in sections" :key="section.key" :class="['nav-item', { active: state.tab === section.key }]" :aria-current="state.tab === section.key ? 'page' : undefined" :disabled="locked" @click="navigate(section.key)"><span class="nav-number">{{ String(index + 1).padStart(2, '0') }}</span>{{ section.label }}</button>
++      </nav>
++      <div class="sidebar-note"><span class="status-dot"></span>站内通知管理<span>异常处理由授权家属完成</span></div>
++    </aside>
++    <div class="workspace">
++      <header class="topbar"><span>用药提醒与家属协同系统</span><div><span class="account-name">{{ state.user.nickname || state.user.account }}</span><el-tag size="small" effect="plain">管理员</el-tag><el-button text :disabled="locked" @click="endSession()">退出登录</el-button></div></header>
++      <main class="main-content">
++        <div class="page-heading"><div><p class="eyebrow">{{ current.eyebrow }}</p><h1>{{ current.label }}</h1><p class="muted">{{ current.subtitle }}</p></div><el-button :loading="state.loading" :disabled="locked" @click="load">刷新数据</el-button></div>
++        <el-alert v-if="state.error" :title="state.error" type="error" show-icon :closable="false" class="page-alert" />
++        <el-alert v-if="state.notice" :title="state.notice" type="info" show-icon closable class="page-alert" @close="state.notice = ''" />
++        <template v-if="state.tab === 'overview'">
++          <section class="stat-grid" v-loading="state.loading" aria-label="运行指标">
++            <article v-for="(stat, index) in stats" :key="stat.label" :class="['stat-card', { accent: index === 2 || index === 4 }]"><span>{{ stat.label }}</span><strong>{{ stat.value === undefined || stat.value === null ? '—' : stat.value.toLocaleString('zh-CN') }}</strong><small>{{ stat.unit }}</small></article>
++          </section>
++          <section class="info-panel"><div><p class="eyebrow">MANAGEMENT SCOPE</p><h2>系统运行，清晰可追溯</h2><p>在这里维护用户状态与预设配置，查看异常事件及通知投递状态。所有成功的敏感操作均记录操作人、变更前后值与原因。</p></div><el-button type="primary" plain :disabled="locked" @click="navigate('audit-logs')">查看操作审计</el-button></section>
++          <p class="data-note">通知统计反映站内消息投递，不代表短信或厂商推送已送达设备。</p>
++        </template>
++        <section v-else class="table-panel">
++          <div class="table-toolbar">
++            <el-form v-if="!isSetting" inline @submit.prevent="search">
++              <el-form-item v-if="state.tab === 'users'" label="用户"><el-input v-model="state.keyword" placeholder="搜索账号或昵称" clearable maxlength="100" :disabled="locked" /></el-form-item>
++              <el-form-item v-if="state.tab !== 'audit-logs'" label="状态"><el-select v-model="state.status" placeholder="全部状态" clearable :disabled="locked" class="filter-select" @change="search"><el-option v-for="option in statusOptions" :key="option.value" :label="option.label" :value="option.value" /></el-select></el-form-item>
++              <el-form-item v-if="state.tab === 'audit-logs'" label="操作"><el-select v-model="state.action" placeholder="全部操作" clearable :disabled="locked" class="filter-select" @change="search"><el-option label="调整用户状态" value="USER_STATUS" /><el-option label="修改系统配置" value="SETTING_UPDATE" /></el-select></el-form-item>
++              <el-form-item><el-button type="primary" native-type="submit" :disabled="locked || state.loading">查询</el-button></el-form-item>
++            </el-form>
++            <span v-else class="muted">预设配置 · 仅可编辑值，提交时须填写原因</span>
++            <span class="row-count">{{ isSetting ? state.rows.length : state.total }} 条记录</span>
++          </div>
++          <el-table :data="state.rows" v-loading="state.loading" row-key="id" style="width: 100%" :aria-label="current.label">
++            <el-table-column v-if="state.tab === 'audit-logs'" type="expand"><template #default="{ row }"><div class="audit-detail"><div><strong>变更前</strong><pre>{{ row.beforeValue ?? '—' }}</pre></div><div><strong>变更后</strong><pre>{{ row.afterValue ?? '—' }}</pre></div></div></template></el-table-column>
++            <el-table-column v-for="[field, label, width] in columns" :key="field" :prop="field" :label="label" :min-width="width" show-overflow-tooltip><template #default="{ row }"><el-tag v-if="['status', 'sendStatus'].includes(field)" :type="statusType(row, field)" size="small" effect="light">{{ display(row, field) }}</el-tag><span v-else>{{ display(row, field) }}</span></template></el-table-column>
++            <el-table-column v-if="isSetting || state.tab === 'users'" label="操作" fixed="right" :width="120"><template #default="{ row }"><el-button v-if="isSetting" link type="primary" :disabled="locked || state.loading" @click="openEditor(row)">编辑配置</el-button><el-button v-else link :type="Number(row.status) === 1 ? 'danger' : 'primary'" :disabled="locked || state.loading || row.role === 'ADMIN'" @click="openEditor(row)">{{ row.role === 'ADMIN' ? '管理员保护' : Number(row.status) === 1 ? '禁用账号' : '启用账号' }}</el-button></template></el-table-column>
++            <template #empty><el-empty v-if="!state.loading" :description="state.error ? '数据加载失败，请点击刷新重试' : '暂无符合条件的记录'" :image-size="72" /><span v-else>正在加载…</span></template>
++          </el-table>
++          <div v-if="!isSetting" class="pagination"><el-pagination :current-page="state.page" :page-size="state.pageSize" :page-sizes="[10, 20, 50]" :total="state.total" layout="total, sizes, prev, pager, next" :pager-count="5" :disabled="locked || state.loading" @current-change="changePage" @size-change="changeSize" /></div>
++          <p v-if="state.tab === 'audit-logs'" class="table-note">展开记录查看变更前后值。仅记录成功的敏感操作。</p>
++        </section>
++      </main>
++      <footer>用药协同管理平台 <span>·</span> 管理操作请遵循最小必要原则</footer>
++    </div>
++    <el-dialog :model-value="!!state.edit" :title="state.edit?.setting ? '编辑系统配置' : Number(state.edit?.status) === 1 ? '确认禁用账号' : '确认启用账号'" width="620px" :before-close="beforeClose" :close-on-click-modal="false" :close-on-press-escape="!locked" :show-close="!locked" @update:model-value="value => { if (!value) closeEditor() }">
++      <template v-if="state.edit">
++        <p class="editor-target">{{ state.edit.setting ? state.edit.name : state.edit.account }} <span>{{ state.edit.setting ? state.edit.code : `用户 ID ${state.edit.id}` }}</span></p>
++        <el-alert v-if="!state.edit.setting" :title="Number(state.edit.status) === 1 ? '禁用后该用户将无法继续使用系统。请确认账号与原因。' : '启用后该用户可重新登录并使用系统。'" type="warning" :closable="false" show-icon class="form-alert" />
++        <el-form label-position="top" @submit.prevent="save">
++          <el-form-item v-if="state.edit.setting" label="配置值">
++            <el-input v-model="form.value" type="textarea" :rows="7" :disabled="locked" aria-label="配置值" class="code-input" />
++            <p class="field-hint" v-if="state.edit.category === 'DICT'">填写 JSON 对象，保留 UNCONFIRMED_TIMEOUT、CONSECUTIVE_UNCONFIRMED、PLAN_ENDED_UNFINISHED 三个固定键；每个中文展示名为 1～40 字。</p>
++            <p class="field-hint" v-else-if="state.edit.category === 'TEMPLATE'">填写 JSON 对象，title 最多 80 字，content 最多 500 字，均不得留空。保存后用于新入队通知；正文按纯文本处理。</p>
++            <p class="field-hint" v-else-if="state.edit.code === 'delivery.paused'">true 暂停站内通知投递；false 恢复投递。</p>
++            <p class="field-hint" v-else>填写 1～100 的整数，控制每批通知处理数量。</p>
++          </el-form-item>
++          <el-form-item label="操作原因（必填）"><el-input v-model="form.reason" type="textarea" :rows="3" maxlength="200" show-word-limit placeholder="请填写 3～200 字的具体原因" :disabled="locked" aria-label="操作原因" /></el-form-item>
++          <el-alert v-if="form.error" :title="form.error" type="error" :closable="false" show-icon />
++        </el-form>
++      </template>
++      <template #footer><el-button :disabled="locked" @click="closeEditor">取消</el-button><el-button type="primary" :loading="locked" @click="save">确认保存</el-button></template>
++    </el-dialog>
++  </div>
++</template>
+
+--- /dev/null
++++ b/admin-web/src/api.js
+@@ -0,0 +1,128 @@
++export class ApiError extends Error {
++  constructor(message, code) {
++    super(message)
++    this.name = 'ApiError'
++    this.code = code
++  }
++}
++
++export class StaleRequestError extends Error {
++  constructor() { super('请求所属会话已结束'); this.name = 'StaleRequestError' }
++}
++
++export class AdminClient {
++  constructor({ fetchImpl = globalThis.fetch.bind(globalThis), storage = globalThis.sessionStorage, onUnauthorized = () => {}, onForbidden = () => {} } = {}) {
++    this.fetchImpl = fetchImpl
++    this.storage = storage
++    this.onUnauthorized = onUnauthorized
++    this.onForbidden = onForbidden
++    this.token = ''
++    this.user = null
++    this.generation = 0
++  }
++
++  clear() {
++    this.generation++
++    this.token = ''
++    this.user = null
++    this.storage?.removeItem('medication.admin.token')
++  }
++
++  async request(path, { method = 'GET', body, auth = true } = {}) {
++    const generation = this.generation
++    const token = this.token
++    const assertCurrent = () => {
++      if (generation !== this.generation || token !== this.token) throw new StaleRequestError()
++    }
++    let response
++    let result
++    try {
++      response = await this.fetchImpl(`/api${path}`, {
++        method,
++        headers: { ...(body === undefined ? {} : { 'Content-Type': 'application/json' }), ...(auth && token ? { Authorization: `Bearer ${token}` } : {}) },
++        ...(body === undefined ? {} : { body: JSON.stringify(body) }),
++        credentials: 'omit',
++      })
++      assertCurrent()
++      try { result = await response.json() } catch (error) {
++        // Expired credentials must still be removed when a proxy returns an HTML error page.
++        if (![401, 403].includes(response.status)) throw error
++        result = {}
++      }
++      assertCurrent()
++    } catch (error) {
++      assertCurrent()
++      if (error instanceof StaleRequestError) throw error
++      throw new ApiError(response ? '服务器返回格式异常，请稍后重试' : '无法连接服务，请检查后端是否启动', response?.status ?? 'NETWORK')
++    }
++    const code = Number(result?.code)
++    if (response.status === 401 || code === 401) {
++      if (auth) { this.clear(); this.onUnauthorized() }
++      throw new ApiError(result?.message || '登录已过期，请重新登录', 401)
++    }
++    if (response.status === 403 || code === 403) {
++      if (auth) { this.clear(); this.onForbidden() }
++      throw new ApiError(result?.message || '当前账号无后台访问权限', 403)
++    }
++    if (!response.ok || ![0, 200].includes(code)) throw new ApiError(result?.message || '请求失败，请重试', code || response.status)
++    return result.data
++  }
++
++  async verify() {
++    const generation = this.generation
++    const user = await this.request('/admin/me')
++    if (generation !== this.generation) throw new StaleRequestError()
++    if (user?.role !== 'ADMIN') {
++      this.clear()
++      this.onForbidden()
++      throw new ApiError('当前账号无后台访问权限', 403)
++    }
++    this.user = user
++    this.storage?.setItem('medication.admin.token', this.token)
++    return user
++  }
++
++  async signIn(account, password) {
++    this.clear()
++    const generation = this.generation
++    const result = await this.request('/auth/login', { method: 'POST', body: { account, password }, auth: false })
++    if (generation !== this.generation) throw new StaleRequestError()
++    if (!result?.token) throw new ApiError('登录响应缺少凭证', 'INVALID_RESPONSE')
++    this.token = result.token
++    try { return await this.verify() } catch (error) {
++      if (!(error instanceof StaleRequestError)) this.clear()
++      throw error
++    }
++  }
++
++  async restore() {
++    const saved = this.storage?.getItem('medication.admin.token')
++    if (!saved) return null
++    this.clear()
++    this.token = saved
++    try { return await this.verify() } catch (error) {
++      if (!(error instanceof StaleRequestError)) this.clear()
++      throw error
++    }
++  }
++}
++
++// A view owns its reads; a pending mutation owns navigation until its refresh completes.
++export class ViewGuard {
++  constructor() { this.version = 0; this.busy = false }
++  beginRead() {
++    const version = ++this.version
++    return { current: () => version === this.version }
++  }
++  navigate() {
++    if (this.busy) return false
++    this.version++
++    return true
++  }
++  invalidate() { this.version++ }
++  async mutate(task) {
++    if (this.busy) throw new ApiError('操作正在提交，请稍候', 'BUSY')
++    this.busy = true
++    try { return await task() } finally { this.busy = false }
++  }
++}
+
+--- /dev/null
++++ b/admin-web/src/main.js
+@@ -0,0 +1,8 @@
++import { createApp } from 'vue'
++import ElementPlus from 'element-plus'
++import zhCn from 'element-plus/es/locale/lang/zh-cn'
++import 'element-plus/dist/index.css'
++import './style.css'
++import App from './App.vue'
++
++createApp(App).use(ElementPlus, { locale: zhCn }).mount('#app')
+
+--- /dev/null
++++ b/admin-web/src/style.css
+@@ -0,0 +1,5 @@
++:root{font-family:Inter,"Microsoft YaHei","PingFang SC",sans-serif;color:#24344b;background:#f3f6fa;font-synthesis:none;text-rendering:optimizeLegibility;-webkit-font-smoothing:antialiased;--el-color-primary:#3a6fa8;--el-border-radius-base:7px;--el-font-family:Inter,"Microsoft YaHei",sans-serif}
++*{box-sizing:border-box}body{margin:0}button,input,textarea{font:inherit}button:focus-visible{outline:3px solid #85b7e4;outline-offset:3px}h1,h2,p{margin:0}h1{font-size:28px;letter-spacing:1px;font-weight:650}h2{font-size:22px;font-weight:600}.muted{color:#718096;font-size:14px;line-height:1.8}.eyebrow{font-size:10px;font-weight:700;letter-spacing:2.2px;color:#7c94b1;margin-bottom:12px}.brand-mark{display:inline-grid;place-items:center;width:60px;height:60px;border:1px solid #738ba7;background:#ffffff0c;border-radius:16px;color:#e6eff9;font-size:27px;font-weight:600}.brand-mark.small{width:38px;height:38px;font-size:21px;border-radius:10px}.boot-screen{height:100vh;background:#f3f6fa}.login-page{min-height:100vh;display:grid;grid-template-columns:minmax(380px,1fr) minmax(400px,1fr);background:#f4f7fb}.login-intro{padding:clamp(60px,12vh,130px) clamp(45px,8vw,120px);background:linear-gradient(135deg,#253c57,#1b2c41);color:white;display:flex;flex-direction:column;align-items:flex-start;justify-content:center}.login-intro .brand-mark{margin-bottom:62px}.login-intro h1{font-size:44px;line-height:1.45;letter-spacing:5px;margin-bottom:26px}.login-intro>p:not(.eyebrow){font-size:15px;color:#aebed0;line-height:2}.login-intro .eyebrow{color:#9bb2ce;letter-spacing:2.7px;margin-bottom:20px}.login-note{font-size:12px;letter-spacing:1px;color:#9aafc6;border-top:1px solid #ffffff1a;padding-top:28px;margin-top:72px;width:100%}.login-card{width:min(400px,calc(100% - 72px));align-self:center;justify-self:center;padding:40px 0}.login-card h2{font-size:28px;margin-bottom:10px}.login-card>.muted{margin-bottom:36px}.login-card .el-form-item{margin-bottom:24px}.login-card .el-input__wrapper{min-height:44px}.login-submit{width:100%;height:46px;letter-spacing:2px;margin-top:8px}.login-footnote{font-size:12px;color:#94a0b1;text-align:center;margin-top:26px}.form-alert{margin-bottom:20px}.admin-shell{display:flex;min-height:100vh}.sidebar{width:220px;flex-shrink:0;background:#24374f;color:#d0dbea;padding:30px 18px 22px;display:flex;flex-direction:column;position:fixed;inset:0 auto 0 0;z-index:10}.brand{display:flex;align-items:center;gap:12px;padding:0 9px}.brand strong{display:block;font-size:17px;letter-spacing:2px;color:#f1f5fb;font-weight:600}.brand div>span{display:block;font-size:10px;color:#9aadc4;margin-top:5px;letter-spacing:2px}.nav-caption{font-size:10px;letter-spacing:2px;color:#90a2b9;padding:0 13px;margin:48px 0 18px}.sidebar nav{display:flex;flex-direction:column;gap:7px}.nav-item{background:transparent;border:0;color:#b9c8db;text-align:left;border-radius:7px;padding:14px 12px;cursor:pointer;font-size:14px;display:flex;gap:14px;align-items:center;transition:background .15s}.nav-item:hover{background:#ffffff08;color:#fff}.nav-item.active{background:#3b5372;color:#fff}.nav-item:disabled{cursor:wait;opacity:.65}.nav-number{font-size:10px;letter-spacing:1px;color:#8da4bf}.nav-item.active .nav-number{color:#b8d0ef}.sidebar-note{margin-top:auto;padding:32px 12px 0;font-size:11px;color:#b4c4d6;line-height:2}.sidebar-note>span:last-child{display:block;font-size:10px;color:#91a4bd}.status-dot{display:inline-block;width:6px;height:6px;border-radius:50%;background:#82b5aa;margin-right:8px}.workspace{margin-left:220px;min-width:0;width:calc(100% - 220px);display:flex;flex-direction:column}.topbar{min-height:70px;background:#fff;border-bottom:1px solid #e5ebf1;padding:12px 38px;display:flex;justify-content:space-between;align-items:center;font-size:12px;color:#8090a3;gap:16px}.topbar>div{display:flex;align-items:center;gap:14px}.account-name{color:#4b5c73;max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.main-content{padding:36px 38px;flex:1;min-width:0}.page-heading{display:flex;align-items:center;justify-content:space-between;gap:20px;margin-bottom:32px}.page-heading .eyebrow{margin-bottom:8px}.page-heading h1{margin-bottom:10px}.page-heading>.el-button{align-self:flex-start;margin-top:28px}.page-alert{margin-bottom:20px}.stat-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:20px}.stat-card{border:1px solid #e3e9f0;border-radius:10px;background:#fff;padding:25px 28px;display:flex;flex-direction:column;min-height:165px;box-shadow:0 3px 15px #1d3b5b03}.stat-card>span{font-size:13px;color:#6e7f95}.stat-card strong{font-size:38px;line-height:1.3;margin:15px 0 7px;font-weight:550;color:#2e496a;font-variant-numeric:tabular-nums}.stat-card small{font-size:11px;color:#9aa6b6}.stat-card.accent{border-top:3px solid #aebfd1;padding-top:23px}.info-panel{display:flex;justify-content:space-between;align-items:center;gap:32px;padding:34px;margin-top:28px;background:#eaf0f7;border:1px solid #e1e8f1;border-radius:10px}.info-panel h2{font-size:19px;margin-bottom:14px}.info-panel p:not(.eyebrow){font-size:13px;color:#718299;line-height:1.9;max-width:700px}.info-panel .el-button{flex-shrink:0}.data-note{font-size:11px;color:#8d9caf;line-height:1.8;margin:18px 2px}.table-panel{background:#fff;border:1px solid #e3e9f0;border-radius:10px;overflow:hidden;min-width:0}.table-toolbar{display:flex;justify-content:space-between;align-items:center;gap:16px;min-height:84px;padding:22px 24px;border-bottom:1px solid #edf1f5}.table-toolbar .el-form{display:flex;align-items:center;flex-wrap:wrap;gap:12px}.table-toolbar .el-form-item{margin:0}.filter-select{width:160px}.row-count{font-size:12px;color:#8e9bae;white-space:nowrap}.el-table{--el-table-header-bg-color:#f9fbfd;--el-table-header-text-color:#718096;--el-table-border-color:#edf1f6;--el-table-row-hover-bg-color:#f8fafd;color:#4b5d74;font-size:13px}.el-table th.el-table__cell{font-size:12px;font-weight:500;height:49px}.el-table td.el-table__cell{height:58px}.el-table .cell{padding-left:22px;padding-right:14px}.pagination{padding:22px 24px;display:flex;justify-content:flex-end;overflow-x:auto}.table-note{font-size:11px;color:#93a0b0;margin:0 24px 20px}.audit-detail{padding:22px 36px;display:grid;grid-template-columns:1fr 1fr;gap:24px;color:#61738b}.audit-detail strong{font-size:12px;font-weight:500}.audit-detail pre{font-family:Consolas,monospace;white-space:pre-wrap;overflow-wrap:anywhere;font-size:12px;line-height:1.8;background:#f3f6fa;border-radius:6px;padding:15px;margin-top:10px}.editor-target{font-size:15px;font-weight:600;margin:0 0 22px;overflow-wrap:anywhere}.editor-target span{display:block;font-size:12px;font-weight:400;color:#8898aa;margin-top:8px}.field-hint{font-size:11px;color:#8796aa;line-height:1.8;margin-top:10px;overflow-wrap:anywhere}.code-input textarea{font-family:Consolas,"Microsoft YaHei",monospace;font-size:12px;line-height:1.8}.el-dialog{max-width:calc(100vw - 28px);border-radius:10px;padding:24px}.el-dialog__title{font-size:18px}.el-dialog__body{padding-top:22px}.el-dialog__footer{padding-top:24px}footer{display:flex;align-items:center;justify-content:center;gap:12px;font-size:10px;color:#9ba8b8;padding:20px 24px 26px;line-height:1.8}
++@media(min-width:1500px){.main-content{padding:42px 55px;max-width:1600px;width:100%;align-self:center}.stat-grid{gap:24px}.stat-card{min-height:180px}.topbar{padding-right:55px}}
++@media(max-width:1100px){.sidebar{width:190px;padding-right:12px;padding-left:12px}.workspace{margin-left:190px;width:calc(100% - 190px)}.main-content{padding:28px 24px}.topbar{padding:14px 24px}.table-toolbar{align-items:flex-start}.table-toolbar .el-form{gap:14px}.row-count{padding-top:9px}.info-panel{padding:26px}.stat-card{padding:22px;min-height:155px}.stat-card.accent{padding-top:20px}}
++@media(max-width:760px){.login-page{display:flex;flex-direction:column}.login-intro{padding:36px;min-height:230px}.login-intro .brand-mark{width:40px;height:40px;font-size:20px;margin-bottom:25px}.login-intro h1{font-size:30px;line-height:1.4;letter-spacing:3px;margin-bottom:14px}.login-intro h1 br{display:none}.login-intro>p:not(.eyebrow){font-size:12px}.login-intro .eyebrow{font-size:9px;margin-bottom:12px}.login-note{display:none}.login-card{padding:38px 0;width:calc(100% - 56px);max-width:400px}.login-card>.muted{margin-bottom:24px}.admin-shell{display:block}.sidebar{position:static;width:100%;padding:18px 18px 12px}.brand{padding:0 4px}.brand strong{font-size:15px}.brand div>span{font-size:9px}.nav-caption,.sidebar-note{display:none}.sidebar nav{flex-direction:row;overflow-x:auto;margin-top:18px;gap:5px;padding:2px 0}.nav-item{white-space:nowrap;padding:11px 13px;font-size:12px}.nav-number{display:none}.workspace{width:100%;margin-left:0}.topbar{padding:12px 18px;min-height:58px}.topbar>span{display:none}.topbar>div{width:100%;justify-content:flex-end;gap:12px}.main-content{padding:26px 16px}.page-heading{margin-bottom:24px;gap:12px}.page-heading h1{font-size:24px}.page-heading .muted{font-size:12px}.page-heading>.el-button{margin-top:22px;flex-shrink:0}.stat-grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:12px}.stat-card{min-height:145px;padding:20px}.stat-card.accent{padding-top:18px}.stat-card strong{font-size:31px;margin-top:14px}.stat-card>span{font-size:12px}.info-panel{display:block;padding:24px;margin-top:20px}.info-panel .el-button{margin-top:22px}.info-panel h2{font-size:18px}.table-toolbar{padding:18px 16px;gap:8px}.table-toolbar .el-form{gap:12px}.table-toolbar .el-form-item{max-width:100%}.table-toolbar .el-input{width:180px}.filter-select{width:145px}.table-toolbar>.muted{font-size:12px}.row-count{font-size:11px}.pagination{justify-content:flex-start;padding:20px 12px}.el-pagination{--el-pagination-font-size:12px}.pagination .el-pagination__sizes{margin-right:8px}.pagination .el-select{width:100px}.audit-detail{grid-template-columns:1fr;padding:18px 20px;gap:12px}.el-dialog{padding:20px}footer{font-size:9px;padding:12px 16px 22px;gap:7px}}
+
+--- /dev/null
++++ b/admin-web/src/validation.js
+@@ -0,0 +1,24 @@
++export function validateReason(reason) {
++  const length = [...reason.trim()].length
++  return length >= 3 && length <= 200 ? '' : '操作原因须为 3～200 字，不能仅含空格'
++}
++
++export function validateSetting(setting, value) {
++  if (setting.category === 'PARAM') {
++    if (setting.code === 'delivery.paused') return ['true', 'false'].includes(value.trim()) ? '' : '暂停开关只能填写 true 或 false'
++    if (setting.code === 'delivery.batch-size') return /^(?:[1-9]\d?|100)$/.test(value.trim()) ? '' : '每批数量须为 1～100 的整数'
++    return '未识别的参数，请刷新后重试'
++  }
++  let parsed
++  try { parsed = JSON.parse(value) } catch { return '请输入合法 JSON，字符串使用英文双引号' }
++  if (setting.category === 'DICT') {
++    const keys = ['UNCONFIRMED_TIMEOUT', 'CONSECUTIVE_UNCONFIRMED', 'PLAN_ENDED_UNFINISHED']
++    return parsed && !Array.isArray(parsed) && typeof parsed === 'object' && Object.keys(parsed).length === 3 && keys.every(key => typeof parsed[key] === 'string' && parsed[key].trim() && [...parsed[key]].length <= 40)
++      ? '' : '字典须为包含三个固定异常编码的 JSON 对象，每个名称为 1～40 字'
++  }
++  if (setting.category === 'TEMPLATE') {
++    return parsed && !Array.isArray(parsed) && typeof parsed === 'object' && typeof parsed.title === 'string' && parsed.title.trim() && [...parsed.title].length <= 80 && typeof parsed.content === 'string' && parsed.content.trim() && [...parsed.content].length <= 500 && Object.keys(parsed).every(key => ['title', 'content'].includes(key))
++      ? '' : '模板须只含非空 title（最多 80 字）、content（最多 500 字）字符串'
++  }
++  return '未识别的配置类型，请刷新后重试'
++}
+
+--- /dev/null
++++ b/admin-web/test/browser-smoke.mjs
+@@ -0,0 +1,137 @@
++// Runs the real Vue UI in local Chrome with synthetic HTTP fixtures; never writes business data.
++import { spawn } from 'node:child_process'
++import { mkdtemp, readFile, writeFile, rm } from 'node:fs/promises'
++import { tmpdir } from 'node:os'
++import { join, resolve, sep, basename } from 'node:path'
++import assert from 'node:assert/strict'
++
++const base = process.env.ADMIN_URL || 'http://127.0.0.1:5173/admin/'
++const profile = await mkdtemp(join(tmpdir(), 'medication-admin-browser-'))
++const chrome = spawn(process.env.CHROME_PATH || 'C:/Program Files/Google/Chrome/Application/chrome.exe',
++  ['--headless=new', '--disable-gpu', '--no-first-run', '--no-default-browser-check', '--remote-debugging-port=0', `--user-data-dir=${profile}`, 'about:blank'],
++  { windowsHide: true, stdio: 'ignore' })
++const delay = ms => new Promise(resolve => setTimeout(resolve, ms))
++let socket
++try {
++  let port
++  for (let i = 0; i < 100; i++) {
++    try { port = Number((await readFile(join(profile, 'DevToolsActivePort'), 'utf8')).split('\n')[0]); break } catch { await delay(100) }
++  }
++  assert.ok(port, 'Chrome debugging endpoint must start')
++  const tabs = await (await fetch(`http://127.0.0.1:${port}/json/list`)).json()
++  socket = new WebSocket(tabs.find(tab => tab.type === 'page').webSocketDebuggerUrl)
++  await new Promise((resolve, reject) => { socket.onopen = resolve; socket.onerror = reject })
++  let id = 0
++  const pending = new Map()
++  const call = (method, params = {}) => new Promise((resolve, reject) => {
++    const current = ++id
++    const timeout = setTimeout(() => { pending.delete(current); reject(new Error(`${method} timed out`)) }, 10000)
++    pending.set(current, { resolve: value => { clearTimeout(timeout); resolve(value) }, reject })
++    socket.send(JSON.stringify({ id: current, method, params }))
++  })
++  const errors = []
++  let status = 1, version = 0, batch = '100', conflict = false, revoke = false, loginRole = 'ADMIN'
++  const audits = []
++  const labels = { UNCONFIRMED_TIMEOUT: '浏览器字典名称', CONSECUTIVE_UNCONFIRMED: '连续未确认', PLAN_ENDED_UNFINISHED: '计划结束未完成' }
++  const setting = () => ({ id: 1, category: 'PARAM', code: 'delivery.batch-size', name: '每批消息投递数量', value: batch, description: '1至100的整数', version })
++  const page = items => ({ items, total: items.length, page: 1, pageSize: 20 })
++  async function respond(event) {
++    const path = new URL(event.request.url).pathname
++    let code = 200, data
++    if (path.endsWith('/auth/login')) data = { token: 'synthetic-browser-only', user: { role: loginRole } }
++    else if (revoke) code = 401
++    else if (path.endsWith('/admin/me')) { if (loginRole !== 'ADMIN') code = 403; else data = { id: 9001, role: 'ADMIN', nickname: '临时浏览器验收' } }
++    else if (path.endsWith('/overview')) data = { totalUsers: 12, activeUsers: 10, openEvents: 3, pendingNotifications: 2, failedNotifications: 1, totalTasks: 120 }
++    else if (path.endsWith('/users')) data = page([{ id: 9002, account: 'qa_browser_user', nickname: '验收普通用户', role: 'USER', status }])
++    else if (path.endsWith('/status')) { status = JSON.parse(event.request.postData).status; audits.push({ id: 1, action: 'USER_STATUS', operatorId: 9001, targetType: 'USER', targetId: '9002', reason: '浏览器验收调整状态', beforeValue: '1', afterValue: String(status) }) }
++    else if (path.endsWith('/settings') && event.request.url.includes('DICT')) data = [{ id: 2, code: 'event.labels', category: 'DICT', value: JSON.stringify(labels), name: '异常类型名称', version: 0 }]
++    else if (path.endsWith('/settings')) data = [setting()]
++    else if (path.endsWith('/settings/1')) {
++      if (conflict) { code = 409; conflict = false; version++ }
++      else { batch = JSON.parse(event.request.postData).value; version++ }
++    }
++    else if (path.endsWith('/events')) data = page([{ id: 5, type: 'UNCONFIRMED_TIMEOUT', status: 'NOTIFIED', occurredAt: '2026-10-15T12:00:00' }])
++    else if (path.endsWith('/notifications')) data = page([{ id: 8, type: 'FAMILY_ALERT', bizType: 'ABNORMAL_EVENT', sendStatus: 'FAILED', retryCount: 3 }])
++    else if (path.endsWith('/audit-logs')) data = page(audits)
++    else throw new Error(`Unexpected API: ${path}`)
++    await call('Fetch.fulfillRequest', { requestId: event.requestId, responseCode: code === 401 || code === 403 ? code : 200,
++      responseHeaders: [{ name: 'Content-Type', value: 'application/json;charset=utf-8' }],
++      body: Buffer.from(JSON.stringify({ code, message: code === 409 ? '配置版本已变化，请刷新' : code === 401 ? '登录已过期' : code === 403 ? '仅平台管理员可访问' : 'ok', data: data ?? null })).toString('base64') })
++  }
++  socket.onmessage = ({ data }) => {
++    const message = JSON.parse(data)
++    if (message.id) {
++      const task = pending.get(message.id)
++      if (task) { pending.delete(message.id); if (message.error) task.reject(new Error(message.error.message)); else task.resolve(message.result) }
++    } else if (message.method === 'Fetch.requestPaused') respond(message.params).catch(error => errors.push(error.message))
++    else if (message.method === 'Runtime.exceptionThrown') errors.push(message.params.exceptionDetails.text)
++  }
++  const evaluate = async expression => {
++    const result = await call('Runtime.evaluate', { expression, awaitPromise: true, returnByValue: true })
++    if (result.exceptionDetails) throw new Error(result.exceptionDetails.exception?.description || result.exceptionDetails.text)
++    return result.result.value
++  }
++  const until = async expression => { for (let i = 0; i < 100; i++) { if (await evaluate(expression)) return; await delay(100) } throw new Error(`UI assertion timed out: ${expression}`) }
++  const text = phrase => `document.body.innerText.includes(${JSON.stringify(phrase)})`
++  const click = phrase => evaluate(`(() => { const button=[...document.querySelectorAll('button')].find(e=>e.innerText.trim()===${JSON.stringify(phrase)}); if(!button || button.disabled) throw new Error('button unavailable'); button.click() })()`)
++  const input = (selector, value) => evaluate(`(() => {const el=document.querySelector(${JSON.stringify(selector)}); if(!el) throw new Error('input missing'); el.value=${JSON.stringify(value)}; el.dispatchEvent(new Event('input',{bubbles:true}))})()`)
++  const nav = async label => {
++    await until(`(() => {const el=[...document.querySelectorAll('.nav-item')].find(e=>e.innerText.includes(${JSON.stringify(label)})); return !!el && !el.disabled})()`)
++    await evaluate(`(() => {const el=[...document.querySelectorAll('.nav-item')].find(e=>e.innerText.includes(${JSON.stringify(label)})); el.click()})()`)
++  }
++  await call('Runtime.enable')
++  await call('Page.enable')
++  await call('Fetch.enable', { patterns: [{ urlPattern: '*/api/*', requestStage: 'Request' }] })
++  await call('Emulation.setDeviceMetricsOverride', { width: 1440, height: 1000, deviceScaleFactor: 1, mobile: false })
++  await call('Page.navigate', { url: base })
++  await until(text('管理员登录'))
++  await input('input[autocomplete="username"]', 'synthetic_admin')
++  await input('input[autocomplete="current-password"]', 'synthetic-not-a-real-password')
++  await click('登录后台')
++  await until(text('120'))
++  await nav('用户管理'); await until(text('qa_browser_user')); await click('禁用账号')
++  await until(text('确认禁用账号'))
++  await click('确认保存'); await until(text('操作原因须'))
++  await input('textarea[aria-label="操作原因"]', '浏览器验收调整状态'); await click('确认保存')
++  await until(text('启用账号')); assert.equal(status, 0)
++  await nav('操作审计'); await until(text('浏览器验收调整状态'))
++  await nav('系统参数'); await until(text('每批消息投递数量')); await click('编辑配置')
++  await input('textarea[aria-label="配置值"]', '25'); await input('textarea[aria-label="操作原因"]', '浏览器验收参数变更'); await click('确认保存')
++  await until('!document.querySelector(".el-overlay-dialog") || document.querySelector(".el-overlay").style.display === "none"')
++  assert.equal(batch, '25')
++  await click('编辑配置'); await input('textarea[aria-label="操作原因"]', '浏览器验收版本冲突'); conflict = true; await click('确认保存')
++  await until(text('重新')); assert.equal(batch, '25')
++  await nav('异常任务'); await until(text('浏览器字典名称'))
++  await nav('通知投递'); await until(text('家属异常通知')); await until(text('失败'))
++  await delay(3200)
++  if (process.env.QA_SCREENSHOT) {
++    const shot = await call('Page.captureScreenshot', { format: 'png' })
++    await writeFile(process.env.QA_SCREENSHOT, Buffer.from(shot.data, 'base64'))
++  }
++  await call('Emulation.setDeviceMetricsOverride', { width: 390, height: 844, deviceScaleFactor: 1, mobile: true })
++  await delay(300)
++  assert.ok(await evaluate('document.documentElement.scrollWidth <= window.innerWidth + 1'), 'mobile page must not overflow horizontally')
++  if (process.env.QA_MOBILE_SCREENSHOT) {
++    const shot = await call('Page.captureScreenshot', { format: 'png' })
++    await writeFile(process.env.QA_MOBILE_SCREENSHOT, Buffer.from(shot.data, 'base64'))
++  }
++  revoke = true; await click('刷新数据'); await until(text('管理员登录'))
++  assert.ok(await evaluate('sessionStorage.getItem("medication.admin.token") === null'))
++  revoke = false; loginRole = 'USER'
++  await input('input[autocomplete="username"]', 'synthetic_user'); await input('input[autocomplete="current-password"]', 'synthetic-password'); await click('登录后台')
++  await until(text('访问受限'))
++  assert.ok(await evaluate('!document.querySelector(".admin-shell")'))
++  assert.deepEqual(errors, [])
++  console.log('PASS Chrome UI: login, status/reason/audit, settings, conflict, dictionary, delivery, 390px layout, 401 and USER denial')
++} catch (error) {
++  console.error(error.message)
++  throw error
++} finally {
++  socket?.close()
++  const exited = new Promise(resolve => { if (chrome.exitCode !== null) resolve(); else chrome.once('exit', resolve) })
++  chrome.kill()
++  await exited
++  const resolvedProfile = resolve(profile)
++  assert.ok(resolvedProfile.startsWith(resolve(tmpdir()) + sep) && basename(resolvedProfile).startsWith('medication-admin-browser-'), 'cleanup must stay in this run\'s temporary profile')
++  await rm(resolvedProfile, { recursive: true, force: true, maxRetries: 10, retryDelay: 200 })
++}
+
+--- /dev/null
++++ b/admin-web/test/evidence.md
+@@ -0,0 +1,9 @@
++# 会话与并发回归证据
++
++日期：2026-10-15，Node.js v26.7.0。
++
++1. 先写 `test/session.test.js` 的四个行为测试，执行 `node --test test/session.test.js`：退出码 1，`ERR_MODULE_NOT_FOUND` 指向尚未实现的 `src/api.js`，1 个测试文件失败。
++2. 实现 `AdminClient` 与 `ViewGuard` 后执行同一命令：退出码 0，4 项通过。覆盖旧会话迟到 401、服务器 `/me` 独立权限检查、并发登录、旧视图失效和保存互斥。
++3. 后续补充当前会话非 JSON 401、恢复凭证权限与实际配置边界测试。执行 `node --test test/*.test.js`：退出码 0，8 项测试全部通过。本文件不推断未执行的构建或浏览器结果。
++
++测试通过 fake fetch 的延迟响应与可控存储驱动真实导出 helper；未用生产数据库、未使用有效账号口令或真实令牌。
+
+--- /dev/null
++++ b/admin-web/test/session.test.js
+@@ -0,0 +1,105 @@
++import test from 'node:test'
++import assert from 'node:assert/strict'
++import { AdminClient, StaleRequestError, ViewGuard } from '../src/api.js'
++
++const response = (data, status = 200, code = status === 200 ? 200 : status) => ({
++  status, ok: status >= 200 && status < 300,
++  json: async () => ({ code, message: status === 401 ? '会话过期' : '请求失败', data }),
++})
++const deferred = () => {
++  let resolve
++  const promise = new Promise(r => { resolve = r })
++  return { promise, resolve }
++}
++const storage = () => {
++  const entries = new Map()
++  return { getItem: key => entries.get(key) ?? null, setItem: (key, value) => entries.set(key, value), removeItem: key => entries.delete(key) }
++}
++
++test('旧会话迟到的401不能清除新管理员会话', async () => {
++  const old = deferred()
++  let expired = 0
++  const client = new AdminClient({ storage: storage(), onUnauthorized: () => expired++, fetchImpl: async url => {
++    if (url.endsWith('/login')) return response({ token: 'new-token', user: { role: 'ADMIN' } })
++    if (url.endsWith('/me')) return response({ id: 2, account: 'admin', role: 'ADMIN' })
++    return old.promise
++  } })
++  const request = client.request('/users').catch(error => error)
++  await client.signIn('admin', 'secret')
++  old.resolve(response(null, 401))
++  assert.ok(await request instanceof StaleRequestError)
++  assert.equal(client.user.id, 2)
++  assert.equal(client.token, 'new-token')
++  assert.equal(expired, 0)
++})
++
++test('登录返回ADMIN仍须经过me验证，普通用户不得进入或留下凭证', async () => {
++  const local = storage()
++  const client = new AdminClient({ storage: local, fetchImpl: async url => response(url.endsWith('/login')
++    ? { token: 'regular-token', user: { role: 'ADMIN' } }
++    : { id: 3, role: 'USER' }) })
++  await assert.rejects(client.signIn('user', 'secret'), error => error.code === 403)
++  assert.equal(client.user, null)
++  assert.equal(client.token, '')
++  assert.equal(local.getItem('medication.admin.token'), null)
++})
++
++test('新登录完成后，旧登录的迟到结果不会覆盖会话', async () => {
++  const first = deferred()
++  const client = new AdminClient({ storage: storage(), fetchImpl: async (url, options) => {
++    if (url.endsWith('/me')) return response({ id: 7, role: 'ADMIN' })
++    if (JSON.parse(options.body).account === 'first') return first.promise
++    return response({ token: 'second-token' })
++  } })
++  const previous = client.signIn('first', 'secret').catch(error => error)
++  await client.signIn('second', 'secret')
++  first.resolve(response({ token: 'first-token' }))
++  assert.ok(await previous instanceof StaleRequestError)
++  assert.equal(client.token, 'second-token')
++  assert.equal(client.user.id, 7)
++})
++
++test('当前会话401即使返回非JSON也清除凭证并通知回登录', async () => {
++  const local = storage()
++  let expired = 0
++  let rejectSession = false
++  const client = new AdminClient({ storage: local, onUnauthorized: () => expired++, fetchImpl: async url => {
++    if (rejectSession) return { status: 401, ok: false, json: async () => { throw new SyntaxError('HTML') } }
++    return response(url.endsWith('/login') ? { token: 'token' } : { id: 1, role: 'ADMIN' })
++  } })
++  await client.signIn('admin', 'secret')
++  rejectSession = true
++  await assert.rejects(client.request('/admin/users'), error => error.code === 401)
++  assert.equal(client.user, null)
++  assert.equal(local.getItem('medication.admin.token'), null)
++  assert.equal(expired, 1)
++})
++
++test('恢复已有凭证同样需要服务器确认管理员角色', async () => {
++  const local = storage()
++  local.setItem('medication.admin.token', 'saved-user-token')
++  let requested
++  const client = new AdminClient({ storage: local, fetchImpl: async (url, options) => {
++    requested = { url, headers: options.headers }
++    return response({ id: 1, role: 'USER' })
++  } })
++  await assert.rejects(client.restore(), error => error.code === 403)
++  assert.equal(requested.url, '/api/admin/me')
++  assert.equal(requested.headers.Authorization, 'Bearer saved-user-token')
++  assert.equal(client.token, '')
++  assert.equal(local.getItem('medication.admin.token'), null)
++})
++
++test('切换视图使旧读取失效；保存期间阻止切换与重复保存', async () => {
++  const guard = new ViewGuard()
++  const oldRead = guard.beginRead()
++  assert.equal(guard.navigate(), true)
++  assert.equal(oldRead.current(), false)
++  const save = deferred()
++  const mutation = guard.mutate(() => save.promise)
++  assert.equal(guard.navigate(), false)
++  await assert.rejects(guard.mutate(() => Promise.resolve()), error => error.code === 'BUSY')
++  save.resolve('saved')
++  assert.equal(await mutation, 'saved')
++  assert.equal(guard.navigate(), true)
++})
+
+--- /dev/null
++++ b/admin-web/test/validation.test.js
+@@ -0,0 +1,26 @@
++import test from 'node:test'
++import assert from 'node:assert/strict'
++import { validateReason, validateSetting } from '../src/validation.js'
++
++test('实际字典对象可提交，缺失固定键、数组或过长标签会被拒绝', () => {
++  const setting = { category: 'DICT', code: 'event.labels' }
++  const value = { UNCONFIRMED_TIMEOUT: '超时未确认', CONSECUTIVE_UNCONFIRMED: '连续未确认', PLAN_ENDED_UNFINISHED: '计划结束仍有未完成任务' }
++  assert.equal(validateSetting(setting, JSON.stringify(value)), '')
++  assert.ok(validateSetting(setting, '[]'))
++  assert.ok(validateSetting(setting, JSON.stringify({ ...value, UNCONFIRMED_TIMEOUT: '字'.repeat(41) })))
++  assert.ok(validateSetting(setting, JSON.stringify({ UNCONFIRMED_TIMEOUT: '超时' })))
++})
++
++test('模板长度与实际投递参数边界在提交前校验', () => {
++  const template = { category: 'TEMPLATE' }
++  assert.equal(validateSetting(template, JSON.stringify({ title: '用药提醒', content: '${nickname}，请查看异常。' })), '')
++  assert.ok(validateSetting(template, JSON.stringify({ title: '字'.repeat(81), content: '正文' })))
++  assert.ok(validateSetting(template, JSON.stringify({ title: '标题', content: '字'.repeat(501) })))
++  assert.equal(validateSetting({ category: 'PARAM', code: 'delivery.batch-size' }, '100'), '')
++  assert.ok(validateSetting({ category: 'PARAM', code: 'delivery.batch-size' }, '101'))
++  assert.ok(validateSetting({ category: 'PARAM', code: 'delivery.batch-size' }, '1.5'))
++  assert.equal(validateSetting({ category: 'PARAM', code: 'delivery.paused' }, 'false'), '')
++  assert.ok(validateSetting({ category: 'PARAM', code: 'delivery.paused' }, '0'))
++  assert.ok(validateReason('  '))
++  assert.equal(validateReason('调整配置'), '')
++})
+
+--- /dev/null
++++ b/admin-web/vite.config.js
+@@ -0,0 +1,14 @@
++import { defineConfig } from 'vite'
++import vue from '@vitejs/plugin-vue'
++
++export default defineConfig({
++  plugins: [vue()],
++  base: '/admin/',
++  server: {
++    host: '127.0.0.1',
++    port: 5173,
++    strictPort: true,
++    proxy: { '/api': { target: 'http://127.0.0.1:8080', changeOrigin: false } },
++  },
++  build: { outDir: 'dist', emptyOutDir: true },
++})
+
+--- /dev/null
++++ b/docs/admin-console.md
+@@ -0,0 +1,57 @@
++# Web 管理后台
++
++依据毕业设计方案第十一项后台管理及第12周“Web管理端、统计与审计”，本阶段交付 Vue 3 + Element Plus 管理端和 Spring Boot 管理接口。
++
++## 范围与权限
++
++- 管理员登录和运行概览；用户数量、启用账号、未关闭异常、提醒任务、待投递及失败通知统计。
++- 用户按账号/昵称与状态查询，启用或禁用普通账号。禁止修改管理员状态，不提供提权、改密码、删除用户或改用药计划接口。
++- 字典、通知模板、投递参数管理；只允许修改固定键的值，采用版本检查拒绝覆盖其他管理员的新版本。
++- 异常事件和通知投递状态只读查询，默认不展示药品、剂量、患者ID、接收人、消息正文或联系电话。
++- 成功的用户状态和配置变更记录操作人、对象、原因、变更前后值和时间。审计与业务修改在同一服务事务内；失败校验不产生成功审计，不提供审计编辑删除接口。
++- 每个受保护请求核对数据库中的当前用户与状态；后台额外要求当前角色为ADMIN，不仅信任JWT中的旧角色。禁用/逻辑删除后旧令牌的后续请求返回401，角色降为USER后后台返回403。
++
++全局任务的已有演示接口仍沿用原权限；本阶段后台只查看状态，不增加手动执行全库任务入口。个人导出、账号注销、系统推送及手机/平板适配未纳入本阶段。
++
++## 数据库与配置
++
++`src/main/resources/db/admin-console.sql` 仅增加 `admin_setting` 和 `admin_audit_log`，不修改既有业务表结构或数据。启动初始化默认开启；CREATE IF NOT EXISTS与INSERT IGNORE保留已有配置，不重置管理员口令。由DBA手工执行脚本后，可用 `--app.initialize-console=false` 关闭启动DDL。初始化需要建表权限；该脚本是现有工程的增量脚本，不能替代仍缺失的全量基础建库脚本。
++
++预置值及使用位置：
++
++| 键 | 值格式 | 生效范围 |
++| --- | --- | --- |
++| `event.labels` | 含三种既有异常编码的JSON对象，各名称1至40字符 | 管理端异常类型展示 |
++| `notification.owner` / `notification.family` | JSON对象，仅title和content，分别至多80和500字符 | 后续新入队的本人/家属通知；不改写历史消息，无表达式或占位符执行 |
++| `delivery.paused` | true/false文本 | 下一批站内消息发布；当前在途批次继续，异常入队保持 |
++| `delivery.batch-size` | 1至100整数文本 | 下一批投递查询上限 |
++
++配置不改变原有授权、通知去重、三次失败上限或家属知晓/关闭语义。
++
++## 接口
++
++所有接口位于 `/api/admin` 且需Bearer令牌，响应沿用 `{code,message,data}`。未登录/账号失效为HTTP401；后台无权限为HTTP403；其他业务拒绝沿用响应体code。配置版本冲突或管理员状态保护为409；目标不存在为404；非法参数为400。
++
++| 方法 | 相对路径 | 用途 |
++| --- | --- | --- |
++| GET | `/me`、`/overview` | 当前管理员安全投影、运行计数 |
++| GET | `/users` | keyword/status筛选，用户安全字段投影 |
++| PATCH | `/users/{id}/status` | `{status:0或1,reason}`，原因3至200字符；重复相同状态不重复记变更审计 |
++| GET | `/settings?category=DICT或TEMPLATE或PARAM` | 固定配置列表 |
++| PUT | `/settings/{id}` | `{value,version,reason}`，乐观版本检查 |
++| GET | `/events`、`/notifications` | status筛选的最小运行元数据 |
++| GET | `/audit-logs` | action筛选（USER_STATUS、SETTING_UPDATE）的只读审计 |
++
++分页接口统一返回 `{items,total,page,pageSize}`，页码1至100000，每页1至50，默认第1页20条。过滤值使用参数绑定与枚举检查。列表按ID倒序；概览与分页总数为当前查询时刻的统计，未保证多个查询的共同快照。
++
++## 运行与验收
++
++后端按主README启动，Web端在 `admin-web` 运行 `npm ci`、`npm run dev`，打开 `http://127.0.0.1:5173/admin/`。页面使用既有管理员账号，不预填口令。详情见 `admin-web/README.md`。
++
++实际观察到管理命名空间缺少保护时测试失败（期望HTTP403、实际200），实现后转绿。开启 `RUN_MYSQL_INTEGRATION_TESTS=true` 的完整Maven测试48项通过，包含管理员越权与角色伪造、路径参数、禁用旧JWT、状态/审计、版本冲突、分页/隐私投影、模板仅对新入队生效和已有家属协同回归。测试关闭定时任务，业务夹具事务回滚；新增管理表及默认配置是本阶段持久交付。
++
++Web端8项Node测试验证会话与视图并发、非JSON401、权限验证和输入边界；真实Chrome在独立HTTP夹具下验证登录、用户禁用与原因、审计、配置保存、409、字典、通知、401清理及普通用户拒绝。浏览器不写真实业务数据，不能代替服务器的真实MySQL集成验证。桌面1440px和窄屏390px检查页面无横向溢出，表格允许内部横向滚动。
++
++## 运行观察
++
++上线后核对用户状态变化与审计一一对应，普通用户后台请求为403，禁用用户旧令牌为401。修改投递暂停开关和每批数量后，观察下一批通知行状态与数量；恢复时不应改写历史正文或倒退事件状态。若发现越权展示、无审计修改或通知异常，先停止管理端配置操作，并将 `delivery.paused` 设true保留现场；不要直接删审计或通知记录。数据库故障、实际事务并发压力和大数据量性能需在部署环境继续验证。
+
+--- /dev/null
++++ b/src/main/java/com/medreminder/medicationbackend/admin/AdminController.java
+@@ -0,0 +1,39 @@
++package com.medreminder.medicationbackend.admin;
++
++import com.medreminder.medicationbackend.common.Result;
++import jakarta.validation.Valid;
++import jakarta.validation.constraints.*;
++import org.springframework.web.bind.annotation.*;
++
++/** Authentication and current database role are checked before every /api/admin request. */
++@RestController
++@RequestMapping("/api/admin")
++public class AdminController {
++    private final AdminService service;
++    public AdminController(AdminService service) { this.service=service; }
++    public record StatusRequest(@NotNull Integer status,@NotBlank @Size(min=3,max=200) String reason) {}
++    public record SettingRequest(@NotNull @Size(max=4000) String value,@NotNull @Min(0) Integer version,
++                                 @NotBlank @Size(min=3,max=200) String reason) {}
++    @GetMapping("/me") public Object me() { return Result.ok(service.me()); }
++    @GetMapping("/overview") public Object overview() { return Result.ok(service.overview()); }
++    @GetMapping("/users") public Object users(@RequestParam(required=false) String keyword,@RequestParam(required=false) Integer status,
++                                             @RequestParam(defaultValue="1") int page,@RequestParam(defaultValue="20") int pageSize) {
++        return Result.ok(service.users(keyword,status,page,pageSize));
++    }
++    @PatchMapping("/users/{id}/status") public Object status(@PathVariable Long id,@Valid @RequestBody StatusRequest request) {
++        return outcome(service.status(id,request.status(),request.reason()));
++    }
++    @GetMapping("/settings") public Object settings(@RequestParam(required=false) String category) { return Result.ok(service.settings(category)); }
++    @PutMapping("/settings/{id}") public Object setting(@PathVariable Long id,@Valid @RequestBody SettingRequest request) {
++        return outcome(service.updateSetting(id,request.value(),request.version(),request.reason()));
++    }
++    @GetMapping("/events") public Object events(@RequestParam(required=false) String status,@RequestParam(defaultValue="1") int page,
++                                               @RequestParam(defaultValue="20") int pageSize) { return Result.ok(service.events(status,page,pageSize)); }
++    @GetMapping("/notifications") public Object notifications(@RequestParam(required=false) String status,@RequestParam(defaultValue="1") int page,
++                                                              @RequestParam(defaultValue="20") int pageSize) { return Result.ok(service.notifications(status,page,pageSize)); }
++    @GetMapping("/audit-logs") public Object audits(@RequestParam(required=false) String action,@RequestParam(defaultValue="1") int page,
++                                                   @RequestParam(defaultValue="20") int pageSize) { return Result.ok(service.audits(action,page,pageSize)); }
++    private Object outcome(int code) {
++        return code==200?Result.ok(null):Result.error(code,code==404?"目标不存在": "状态或配置版本已变化，或该账号不允许修改，请刷新确认");
++    }
++}
+
+--- /dev/null
++++ b/src/main/java/com/medreminder/medicationbackend/admin/AdminService.java
+@@ -0,0 +1,99 @@
++package com.medreminder.medicationbackend.admin;
++
++import com.medreminder.medicationbackend.common.UserContext;
++import org.springframework.jdbc.core.JdbcTemplate;
++import org.springframework.stereotype.Service;
++import org.springframework.transaction.annotation.Transactional;
++import java.util.*;
++
++@Service
++public class AdminService {
++    private final JdbcTemplate db;
++    private final ConsoleSettings settings;
++    public AdminService(JdbcTemplate db,ConsoleSettings settings) { this.db=db; this.settings=settings; }
++    public record Page(List<Map<String,Object>> items,long total,int page,int pageSize) {}
++    private static final String USER_COLUMNS="id,account,nickname,role,status,create_time as createTime,last_login_at as lastLoginAt";
++    public Map<String,Object> me() {
++        return db.queryForMap("select "+USER_COLUMNS+" from sys_user where id=? and deleted=0",UserContext.userId());
++    }
++    public Map<String,Long> overview() {
++        return Map.of("totalUsers",count("sys_user"," where deleted=0"),
++                "activeUsers",count("sys_user"," where deleted=0 and status=1"),
++                "openEvents",count("abnormal_event"," where status<>'CLOSED'"),
++                "totalTasks",count("remind_task",""),
++                "pendingNotifications",count("notification"," where send_status='PENDING'"),
++                "failedNotifications",count("notification"," where send_status='FAILED'"));
++    }
++    private long count(String table,String where) { return db.queryForObject("select count(*) from "+table+where,Long.class); }
++    public Page users(String keyword,Integer status,int page,int pageSize) {
++        var args=new ArrayList<Object>(); String where=" where deleted=0";
++        if(keyword!=null && !keyword.isBlank()) {
++            if(keyword.length()>80) throw new IllegalArgumentException("搜索词至多80字符");
++            where+=" and (locate(?,account)>0 or locate(?,nickname)>0)"; args.add(keyword.trim()); args.add(keyword.trim());
++        }
++        if(status!=null) { if(status!=0 && status!=1) throw new IllegalArgumentException("无效账号状态"); where+=" and status=?"; args.add(status); }
++        return page("sys_user",USER_COLUMNS,where,args,page,pageSize);
++    }
++    public List<Map<String,Object>> settings(String category) {
++        if(category!=null && !Set.of("DICT","TEMPLATE","PARAM").contains(category)) throw new IllegalArgumentException("无效配置类别");
++        String sql="select id,category,code,name,setting_value as value,description,version,update_time as updateTime from admin_setting";
++        return category==null?db.queryForList(sql+" order by id"):db.queryForList(sql+" where category=? order by id",category);
++    }
++    public Page events(String status,int page,int pageSize) {
++        return byStatus("abnormal_event","id,type,status,occurred_at as occurredAt,notified_at as notifiedAt,acknowledged_at as acknowledgedAt,closed_at as closedAt",
++                "status",status,Set.of("OPEN","NOTIFIED","ACKNOWLEDGED","CLOSED"),page,pageSize);
++    }
++    public Page notifications(String status,int page,int pageSize) {
++        return byStatus("notification","id,type,biz_type as bizType,send_status as sendStatus,retry_count as retryCount,create_time as createTime,sent_at as sentAt",
++                "send_status",status,Set.of("PENDING","SENT","FAILED","CANCELLED"),page,pageSize);
++    }
++    public Page audits(String action,int page,int pageSize) {
++        return byStatus("admin_audit_log","id,operator_id as operatorId,action,target_type as targetType,target_id as targetId,reason,before_value as beforeValue,after_value as afterValue,create_time as createTime",
++                "action",action,Set.of("USER_STATUS","SETTING_UPDATE"),page,pageSize);
++    }
++    private Page byStatus(String table,String columns,String field,String status,Set<String> allowed,int page,int size) {
++        if(status==null || status.isBlank()) return page(table,columns,"",List.of(),page,size);
++        if(!allowed.contains(status)) throw new IllegalArgumentException("无效筛选状态");
++        return page(table,columns," where "+field+"=?",List.of(status),page,size);
++    }
++    private Page page(String table,String columns,String where,List<Object> args,int page,int size) {
++        if(page<1 || page>100000 || size<1 || size>50) throw new IllegalArgumentException("页码1至100000，每页数量1至50");
++        long total=db.queryForObject("select count(*) from "+table+where,Long.class,args.toArray());
++        var paged=new ArrayList<>(args); paged.add(size); paged.add((page-1)*size);
++        return new Page(db.queryForList("select "+columns+" from "+table+where+" order by id desc limit ? offset ?",paged.toArray()),total,page,size);
++    }
++    /** The state write and append-only audit share one transaction. No role or password changes. */
++    @Transactional
++    public int status(Long id,int status,String reason) {
++        reason=reason(reason);
++        if(status!=0 && status!=1) throw new IllegalArgumentException("账号状态必须为0或1");
++        var rows=db.queryForList("select role,status from sys_user where id=? and deleted=0 for update",id);
++        if(rows.isEmpty()) return 404;
++        var row=rows.get(0);
++        if(!"USER".equals(row.get("role"))) return 409;
++        if(((Number)row.get("status")).intValue()==status) return 200;
++        db.update("update sys_user set status=?,update_time=now() where id=? and deleted=0",status,id);
++        audit("USER_STATUS","USER",id,reason,row.get("status").toString(),Integer.toString(status));
++        return 200;
++    }
++    @Transactional
++    public int updateSetting(Long id,String value,int version,String reason) {
++        reason=reason(reason);
++        var rows=db.queryForList("select code,setting_value,version from admin_setting where id=? for update",id);
++        if(rows.isEmpty()) return 404;
++        var row=rows.get(0);
++        if(((Number)row.get("version")).intValue()!=version) return 409;
++        value=settings.validate((String)row.get("code"),value);
++        db.update("update admin_setting set setting_value=?,version=version+1,update_time=now() where id=? and version=?",value,id,version);
++        audit("SETTING_UPDATE","SETTING",id,reason,(String)row.get("setting_value"),value);
++        return 200;
++    }
++    private String reason(String reason) {
++        if(reason==null || reason.trim().length()<3 || reason.trim().length()>200) throw new IllegalArgumentException("请填写3至200字的操作原因");
++        return reason.trim();
++    }
++    private void audit(String action,String type,Long id,String reason,String before,String after) {
++        db.update("insert into admin_audit_log(operator_id,action,target_type,target_id,reason,before_value,after_value) values(?,?,?,?,?,?,?)",
++                UserContext.userId(),action,type,id.toString(),reason,before,after);
++    }
++}
+
+--- /dev/null
++++ b/src/main/java/com/medreminder/medicationbackend/admin/ConsoleSchemaInitializer.java
+@@ -0,0 +1,21 @@
++package com.medreminder.medicationbackend.admin;
++
++import javax.sql.DataSource;
++import org.springframework.boot.CommandLineRunner;
++import org.springframework.boot.autoconfigure.condition.ConditionalOnProperty;
++import org.springframework.core.io.ClassPathResource;
++import org.springframework.jdbc.datasource.init.ResourceDatabasePopulator;
++import org.springframework.stereotype.Component;
++
++/** Only adds console tables and missing seed keys. Disable after DBA-managed migration if needed. */
++@Component
++@ConditionalOnProperty(name="app.initialize-console", havingValue="true", matchIfMissing=true)
++public class ConsoleSchemaInitializer implements CommandLineRunner {
++    private final DataSource dataSource;
++    public ConsoleSchemaInitializer(DataSource dataSource) { this.dataSource=dataSource; }
++    @Override public void run(String... args) {
++        var script=new ResourceDatabasePopulator(new ClassPathResource("db/admin-console.sql"));
++        script.setSqlScriptEncoding("UTF-8");
++        script.execute(dataSource);
++    }
++}
+
+--- /dev/null
++++ b/src/main/java/com/medreminder/medicationbackend/admin/ConsoleSettings.java
+@@ -0,0 +1,71 @@
++package com.medreminder.medicationbackend.admin;
++
++import com.fasterxml.jackson.databind.JsonNode;
++import com.fasterxml.jackson.databind.ObjectMapper;
++import com.fasterxml.jackson.databind.DeserializationFeature;
++import org.springframework.jdbc.core.JdbcTemplate;
++import org.springframework.stereotype.Service;
++import java.util.Set;
++
++/** Fixed configuration keys: no arbitrary SQL, expression, path or executable template. */
++@Service
++public class ConsoleSettings {
++    private final JdbcTemplate db;
++    private final ObjectMapper json;
++    public ConsoleSettings(JdbcTemplate db,ObjectMapper json) { this.db=db; this.json=json; }
++    public record MessageTemplate(String title,String content) {}
++    public record DeliveryPolicy(boolean paused,int batchSize) {}
++
++    public DeliveryPolicy deliveryPolicy() {
++        var values=db.queryForList("select code,setting_value from admin_setting where category='PARAM'");
++        boolean paused=false; int size=100;
++        for(var row:values) {
++            if("delivery.paused".equals(row.get("code"))) paused=Boolean.parseBoolean((String)row.get("setting_value"));
++            if("delivery.batch-size".equals(row.get("code"))) size=Integer.parseInt((String)row.get("setting_value"));
++        }
++        return new DeliveryPolicy(paused,Math.max(1,Math.min(100,size)));
++    }
++    public MessageTemplate template(boolean family) {
++        String value=db.queryForObject("select setting_value from admin_setting where code=?",String.class,
++                family?"notification.family":"notification.owner");
++        JsonNode node=parse(value);
++        return new MessageTemplate(node.get("title").asText(),node.get("content").asText());
++    }
++    public String validate(String code,String value) {
++        if(value==null || value.length()>4000) throw new IllegalArgumentException("配置内容不能为空或超过4000字符");
++        value=value.trim();
++        switch(code) {
++            case "delivery.paused" -> {
++                if(!Set.of("true","false").contains(value)) throw new IllegalArgumentException("暂停开关只能为true或false");
++            }
++            case "delivery.batch-size" -> {
++                if(!value.matches("[1-9][0-9]?|100")) throw new IllegalArgumentException("每批数量必须为1至100的整数");
++            }
++            case "notification.owner", "notification.family" -> {
++                JsonNode node=parse(value);
++                if(!node.isObject() || node.size()!=2 || !text(node,"title",80) || !text(node,"content",500))
++                    throw new IllegalArgumentException("模板必须包含非空title（至多80字）及content（至多500字），不能含其他字段");
++            }
++            case "event.labels" -> {
++                JsonNode node=parse(value);
++                var keys=Set.of("UNCONFIRMED_TIMEOUT","CONSECUTIVE_UNCONFIRMED","PLAN_ENDED_UNFINISHED");
++                if(!node.isObject() || node.size()!=keys.size() || keys.stream().anyMatch(k->!text(node,k,40)))
++                    throw new IllegalArgumentException("字典必须包含三种既有异常类型，每个名称1至40字");
++            }
++            default -> throw new IllegalArgumentException("该配置键不允许修改");
++        }
++        return value;
++    }
++    private boolean text(JsonNode node,String key,int max) {
++        return node.has(key) && node.get(key).isTextual() && !node.get(key).asText().isBlank()
++                && node.get(key).asText().length()<=max;
++    }
++    private JsonNode parse(String value) {
++        try {
++            JsonNode node=json.reader().with(DeserializationFeature.FAIL_ON_TRAILING_TOKENS).readTree(value);
++            if(node==null) throw new IllegalArgumentException("empty JSON");
++            return node;
++        }
++        catch(Exception e) { throw new IllegalArgumentException("配置内容必须是合法JSON"); }
++    }
++}
+
+--- /dev/null
++++ b/src/main/resources/db/admin-console.sql
+@@ -0,0 +1,30 @@
++-- Additive and repeatable: never rewrites existing configuration or business records.
++CREATE TABLE IF NOT EXISTS admin_setting (
++  id BIGINT PRIMARY KEY AUTO_INCREMENT,
++  category VARCHAR(16) NOT NULL,
++  code VARCHAR(80) NOT NULL UNIQUE,
++  name VARCHAR(80) NOT NULL,
++  setting_value TEXT NOT NULL,
++  description VARCHAR(300) NOT NULL,
++  version INT NOT NULL DEFAULT 0,
++  update_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
++) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
++CREATE TABLE IF NOT EXISTS admin_audit_log (
++  id BIGINT PRIMARY KEY AUTO_INCREMENT,
++  operator_id BIGINT NOT NULL,
++  action VARCHAR(40) NOT NULL,
++  target_type VARCHAR(40) NOT NULL,
++  target_id VARCHAR(80) NOT NULL,
++  reason VARCHAR(200) NOT NULL,
++  before_value TEXT NOT NULL,
++  after_value TEXT NOT NULL,
++  create_time DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
++  INDEX idx_admin_audit_created (create_time),
++  INDEX idx_admin_audit_action (action, id)
++) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4;
++INSERT IGNORE INTO admin_setting(category,code,name,setting_value,description) VALUES
++('DICT','event.labels','异常类型名称','{"UNCONFIRMED_TIMEOUT":"超时未确认服药","CONSECUTIVE_UNCONFIRMED":"连续多次未确认","PLAN_ENDED_UNFINISHED":"计划结束未完成"}','管理端异常列表的类型名称；仅修改展示，不修改业务状态'),
++('TEMPLATE','notification.owner','本人异常通知','{"title":"用药未确认提醒","content":"您有用药提醒超时未确认，系统已记录异常。这不代表医学意义上的漏服。"}','仅影响之后新入队的本人通知，已有消息保持原文'),
++('TEMPLATE','notification.family','家属异常通知','{"title":"家属用药未确认提醒","content":"您关注的家人有用药提醒超时未确认，请查看授权范围内的异常事件。"}','仅影响之后新入队的授权家属通知，已有消息保持原文'),
++('PARAM','delivery.paused','暂停站内消息发布','false','true暂停后续投递批次，已执行中的批次继续完成；不会停止异常入队'),
++('PARAM','delivery.batch-size','每批消息投递数量','100','1至100之间的整数，下一个投递批次生效');
+
+--- /dev/null
++++ b/src/test/java/com/medreminder/medicationbackend/AdminApiIntegrationTest.java
+@@ -0,0 +1,151 @@
++package com.medreminder.medicationbackend;
++
++import com.medreminder.medicationbackend.entity.User;
++import com.medreminder.medicationbackend.mapper.UserMapper;
++import com.medreminder.medicationbackend.util.JwtUtil;
++import org.junit.jupiter.api.Test;
++import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
++import org.springframework.beans.factory.annotation.Autowired;
++import org.springframework.boot.test.autoconfigure.web.servlet.AutoConfigureMockMvc;
++import org.springframework.boot.test.context.SpringBootTest;
++import org.springframework.jdbc.core.JdbcTemplate;
++import org.springframework.test.web.servlet.MockMvc;
++import org.springframework.transaction.annotation.Transactional;
++import java.util.UUID;
++import static org.junit.jupiter.api.Assertions.*;
++import static org.springframework.test.web.servlet.request.MockMvcRequestBuilders.*;
++import static org.springframework.test.web.servlet.result.MockMvcResultMatchers.*;
++
++@EnabledIfEnvironmentVariable(named="RUN_MYSQL_INTEGRATION_TESTS", matches="true")
++@SpringBootTest(properties={"reminder.scheduling.enabled=false", "notification.delivery.enabled=false",
++        "app.initialize-admin=false", "app.initialize-console=true"})
++@AutoConfigureMockMvc
++@Transactional
++class AdminApiIntegrationTest {
++    @Autowired MockMvc mvc;
++    @Autowired UserMapper users;
++    @Autowired JwtUtil jwt;
++    @Autowired JdbcTemplate db;
++
++    @Test void administratorCanLoadIdentityAndRealDatabaseOverview() throws Exception {
++        var admin=user("ADMIN");
++        mvc.perform(get("/api/admin/me").header("Authorization",token(admin)))
++                .andExpect(jsonPath("$.code").value(200))
++                .andExpect(jsonPath("$.data.id").value(admin.getId()))
++                .andExpect(jsonPath("$.data.role").value("ADMIN"))
++                .andExpect(jsonPath("$.data.phone").doesNotExist())
++                .andExpect(jsonPath("$.data.passwordHash").doesNotExist());
++        mvc.perform(get("/api/admin/overview").header("Authorization",token(admin)))
++                .andExpect(jsonPath("$.code").value(200))
++                .andExpect(jsonPath("$.data.totalUsers").isNumber())
++                .andExpect(jsonPath("$.data.openEvents").isNumber())
++                .andExpect(jsonPath("$.data.pendingNotifications").isNumber())
++                .andExpect(jsonPath("$.data.totalTasks").isNumber());
++    }
++
++    @Test void ordinaryCannotAccessAdminNamespace() throws Exception {
++        var user = user("USER");
++        for (String path : new String[]{"me","overview","users","settings","events","notifications","audit-logs"}) {
++            mvc.perform(get("/api/admin/"+path).header("Authorization", token(user)))
++                    .andExpect(status().isForbidden()).andExpect(jsonPath("$.code").value(403));
++        }
++    }
++    @Test void administratorClaimCannotElevateAnOrdinaryDatabaseUser() throws Exception {
++        var user = user("USER");
++        mvc.perform(get("/api/admin/me").header("Authorization", "Bearer "+jwt.generate(user.getId(),"ADMIN")))
++                .andExpect(status().isForbidden());
++    }
++    @Test void matrixParameterDoesNotBypassAdministratorCheck() throws Exception {
++        var user=user("USER");
++        mvc.perform(get("/api/admin;v=1/me").header("Authorization",token(user)))
++                .andExpect(status().isForbidden());
++    }
++    @Test void disabledAndDeletedAccountsLoseExistingTokens() throws Exception {
++        var user = user("USER"); String token = token(user);
++        user.setStatus(0); users.updateById(user);
++        mvc.perform(get("/api/notifications/unread-count").header("Authorization",token))
++                .andExpect(status().isUnauthorized());
++        users.deleteById(user.getId());
++        mvc.perform(get("/api/notifications/unread-count").header("Authorization",token))
++                .andExpect(status().isUnauthorized());
++    }
++    @Test void userStatusChangeIsAuditedAndRevokesTheOldSession() throws Exception {
++        var admin=user("ADMIN"); var target=user("USER"); String oldToken=token(target);
++        mvc.perform(patch("/api/admin/users/{id}/status",target.getId()).header("Authorization",token(admin))
++                        .contentType("application/json").content("{\"status\":0,\"reason\":\"测试禁用账号\"}"))
++                .andExpect(jsonPath("$.code").value(200));
++        assertEquals(0,users.selectById(target.getId()).getStatus());
++        assertEquals(1,db.queryForObject("select count(*) from admin_audit_log where operator_id=? and target_id=? and action='USER_STATUS'",Integer.class,admin.getId(),target.getId().toString()));
++        mvc.perform(get("/api/notifications/unread-count").header("Authorization",oldToken))
++                .andExpect(status().isUnauthorized());
++        mvc.perform(get("/api/admin/audit-logs").header("Authorization",token(admin)).param("action","USER_STATUS"))
++                .andExpect(jsonPath("$.code").value(200));
++    }
++    @Test void administratorsCannotBeDisabledAndInvalidStatusCannotBeWritten() throws Exception {
++        var admin=user("ADMIN");
++        mvc.perform(patch("/api/admin/users/{id}/status",admin.getId()).header("Authorization",token(admin))
++                        .contentType("application/json").content("{\"status\":0,\"reason\":\"不允许禁用管理员\"}"))
++                .andExpect(jsonPath("$.code").value(409));
++        var target=user("USER");
++        mvc.perform(patch("/api/admin/users/{id}/status",target.getId()).header("Authorization",token(admin))
++                        .contentType("application/json").content("{\"status\":2,\"reason\":\"非法状态\"}"))
++                .andExpect(jsonPath("$.code").value(400));
++        assertEquals(1,users.selectById(target.getId()).getStatus());
++    }
++    @Test void userProjectionExcludesPhoneAndPasswordAndSupportsFiltering() throws Exception {
++        var admin=user("ADMIN"); var target=user("USER");
++        mvc.perform(get("/api/admin/users").header("Authorization",token(admin)).param("keyword",target.getAccount()))
++                .andExpect(jsonPath("$.data.total").value(1))
++                .andExpect(jsonPath("$.data.items[0].phone").doesNotExist())
++                .andExpect(jsonPath("$.data.items[0].passwordHash").doesNotExist());
++    }
++    @Test void configurationUpdatesRequireCurrentVersionAndAreAudited() throws Exception {
++        var admin=user("ADMIN");
++        var row=db.queryForMap("select id,version from admin_setting where code='delivery.batch-size'");
++        var id=((Number)row.get("id")).longValue(); var version=((Number)row.get("version")).intValue();
++        String body="{\"value\":\"25\",\"version\":"+version+",\"reason\":\"调整本批投递数量\"}";
++        mvc.perform(put("/api/admin/settings/{id}",id).header("Authorization",token(admin))
++                        .contentType("application/json").content(body)).andExpect(jsonPath("$.code").value(200));
++        mvc.perform(put("/api/admin/settings/{id}",id).header("Authorization",token(admin))
++                        .contentType("application/json").content(body)).andExpect(jsonPath("$.code").value(409));
++        assertEquals("25",db.queryForObject("select setting_value from admin_setting where id=?",String.class,id));
++        assertEquals(1,db.queryForObject("select count(*) from admin_audit_log where operator_id=? and action='SETTING_UPDATE'",Integer.class,admin.getId()));
++    }
++    @Test void invalidConfigurationAndMissingReasonCannotMutateOrAudit() throws Exception {
++        var admin=user("ADMIN");
++        var row=db.queryForMap("select id,version from admin_setting where code='delivery.batch-size'");
++        for(String value:new String[]{"0","101","oops"}) {
++            mvc.perform(put("/api/admin/settings/{id}",row.get("id")).header("Authorization",token(admin))
++                    .contentType("application/json").content("{\"value\":\""+value+"\",\"version\":"+row.get("version")+",\"reason\":\"无效配置测试\"}"))
++                    .andExpect(jsonPath("$.code").value(400));
++        }
++        mvc.perform(patch("/api/admin/users/{id}/status",user("USER").getId()).header("Authorization",token(admin))
++                        .contentType("application/json").content("{\"status\":0,\"reason\":\" \"}"))
++                .andExpect(jsonPath("$.code").value(400));
++        assertEquals(0,db.queryForObject("select count(*) from admin_audit_log where operator_id=?",Integer.class,admin.getId()));
++    }
++    @Test void projectionsExposeOnlyOperationalEventAndNotificationFields() throws Exception {
++        var admin=user("ADMIN");
++        for(String path:new String[]{"events","notifications"}) {
++            String json=mvc.perform(get("/api/admin/"+path).header("Authorization",token(admin)))
++                    .andExpect(jsonPath("$.code").value(200)).andReturn().getResponse().getContentAsString();
++            for(String secret:new String[]{"medicineName","content","receiverId","userId","passwordHash","phone"})
++                assertFalse(json.contains("\""+secret+"\":"),json);
++        }
++    }
++    @Test void boundedPaginationAndStatusFiltersRejectBadInputs() throws Exception {
++        var admin=user("ADMIN");
++        for(String path:new String[]{"users","events","notifications","audit-logs"}) {
++            mvc.perform(get("/api/admin/"+path).header("Authorization",token(admin)).param("pageSize","500"))
++                    .andExpect(jsonPath("$.code").value(400));
++        }
++        mvc.perform(get("/api/admin/events").header("Authorization",token(admin)).param("status","' OR 1=1"))
++                .andExpect(jsonPath("$.code").value(400));
++    }
++    User user(String role) {
++        var user=new User(); user.setAccount("admin_it_"+UUID.randomUUID().toString().substring(0,20));
++        user.setNickname("后台测试"); user.setPhone(null); user.setPasswordHash("test-not-a-login-password");
++        user.setRole(role); user.setStatus(1); users.insert(user); return user;
++    }
++    String token(User user) { return "Bearer "+jwt.generate(user.getId(),user.getRole()); }
++}

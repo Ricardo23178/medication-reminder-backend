@@ -6,6 +6,12 @@ import com.medreminder.medicationbackend.entity.Notification;
 import com.medreminder.medicationbackend.mapper.AbnormalEventMapper;
 import com.medreminder.medicationbackend.mapper.NotificationMapper;
 import org.junit.jupiter.api.Test;
+import org.junit.jupiter.api.BeforeEach;
+import org.junit.jupiter.api.BeforeAll;
+import com.medreminder.medicationbackend.admin.ConsoleSettings;
+import com.baomidou.mybatisplus.core.MybatisConfiguration;
+import com.baomidou.mybatisplus.core.metadata.TableInfoHelper;
+import org.apache.ibatis.builder.MapperBuilderAssistant;
 import org.springframework.dao.TransientDataAccessResourceException;
 
 import java.util.List;
@@ -15,11 +21,32 @@ import static org.mockito.Mockito.*;
 
 @SuppressWarnings("unchecked")
 class NotificationDispatcherTest {
+    @BeforeAll
+    static void initializeNotificationMetadata() {
+        TableInfoHelper.initTableInfo(new MapperBuilderAssistant(new MybatisConfiguration(), "dispatcher-test"),
+                Notification.class);
+    }
+
     final NotificationMapper notifications = mock(NotificationMapper.class);
     final AbnormalEventMapper events = mock(AbnormalEventMapper.class);
     final NotificationService inbox = mock(NotificationService.class);
     final NotificationDeliveryService delivery = mock(NotificationDeliveryService.class);
-    final NotificationDispatcher dispatcher = new NotificationDispatcher(notifications, events, inbox, delivery);
+    final ConsoleSettings settings = mock(ConsoleSettings.class);
+    final NotificationDispatcher dispatcher = new NotificationDispatcher(notifications, events, inbox, delivery, settings);
+    @BeforeEach void defaultPolicy() { when(settings.deliveryPolicy()).thenReturn(new ConsoleSettings.DeliveryPolicy(false,100)); }
+
+    @Test void pausedDeliveryLeavesPendingRowsUntouched() {
+        when(settings.deliveryPolicy()).thenReturn(new ConsoleSettings.DeliveryPolicy(true,25));
+        dispatcher.dispatchPending();
+        verifyNoInteractions(notifications,delivery);
+    }
+
+    @Test void batchSizeIsReadFromCurrentConfiguration() {
+        when(settings.deliveryPolicy()).thenReturn(new ConsoleSettings.DeliveryPolicy(false,25));
+        when(notifications.selectList(any(Wrapper.class))).thenReturn(List.of());
+        dispatcher.dispatchPending();
+        verify(notifications).selectList(argThat((Wrapper<Notification> query) -> query.getSqlSegment().endsWith("LIMIT 25")));
+    }
 
     @Test
     void publicationFailureRecordsAnAttemptAndContinuesWithNextMessage() {
