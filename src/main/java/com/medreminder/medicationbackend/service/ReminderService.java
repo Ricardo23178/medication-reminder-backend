@@ -23,6 +23,7 @@ import org.springframework.transaction.annotation.Transactional;
 import java.time.LocalDate;
 import java.time.LocalDateTime;
 import java.util.List;
+import java.util.Objects;
 import java.util.stream.Collectors;
 
 /**
@@ -30,7 +31,7 @@ import java.util.stream.Collectors;
  *
  * 三大职责：
  * 1. 生成当天提醒任务：按 ACTIVE 计划 + 时间点，滚动生成当天「实例」（remind_task）。
- *    幂等靠 uk_plantime_scheduled 唯一键 —— 重复生成命中唯一键冲突，忽略即可。
+ *    幂等靠 uk_plan_version_scheduled 唯一键 —— 同一版本同一时刻不重复生成。
  * 2. 查当天清单：返回今天该吃哪些药（带药品名、剂量、状态）。
  * 3. 已服/跳过：WAITING/TRIGGERED → CONFIRMED；稍后保持TRIGGERED，允许再次确认。
  *    幂等靠 uk_task 唯一键 —— 重复点击命中唯一键，返回首次结果，不报错、不重复记录。
@@ -103,7 +104,13 @@ public class ReminderService {
      */
     @Transactional
     public int confirm(Long userId, Long taskId, ConfirmRequest req) {
-        // 越权校验：任务必须属于当前用户
+        // 先取得归属计划，再统一按“计划 → 任务”加锁，与改版、暂停和扫描保持一致。
+        RemindTask candidate = remindTaskMapper.selectOne(new LambdaQueryWrapper<RemindTask>()
+                .eq(RemindTask::getId, taskId).eq(RemindTask::getUserId, userId));
+        if (candidate == null) {
+            return 2;
+        }
+        MedicationPlan plan = lockOwnedPlan(candidate);
         RemindTask task = remindTaskMapper.selectOne(
                 new LambdaQueryWrapper<RemindTask>()
                         .eq(RemindTask::getId, taskId)
@@ -123,6 +130,9 @@ public class ReminderService {
         if (!"WAITING".equals(task.getStatus()) && !"TRIGGERED".equals(task.getStatus())) {
             return 4;
         }
+        if (!isCurrentActiveVersion(plan, task)) {
+            return 4;
+        }
 
         // 超时校验：超出容忍窗口，不允许再确认
         LocalDateTime now = LocalDateTime.now();
@@ -136,7 +146,7 @@ public class ReminderService {
         if (delayed && (delayMinutes < 1 || delayMinutes > 120)) {
             throw new IllegalArgumentException("稍后时间必须为1至120分钟");
         }
-        MedicationRecord existing = getRecordByTask(taskId);
+        MedicationRecord existing = getRecordByTaskForUpdate(taskId);
         if (existing != null && req.getClientRequestId() != null && !req.getClientRequestId().isBlank()
                 && req.getClientRequestId().equals(existing.getClientRequestId())) {
             return 1;
@@ -146,6 +156,7 @@ public class ReminderService {
         }
         LambdaUpdateWrapper<RemindTask> transition = new LambdaUpdateWrapper<RemindTask>()
                 .eq(RemindTask::getId, taskId).eq(RemindTask::getUserId, userId)
+                .eq(RemindTask::getPlanVersion, plan.getPlanVersion())
                 .in(RemindTask::getStatus, "WAITING", "TRIGGERED")
                 .ge(RemindTask::getExpireAt, now)
                 .set(RemindTask::getStatus, delayed ? "TRIGGERED" : "CONFIRMED");
@@ -191,6 +202,12 @@ public class ReminderService {
                         .eq(MedicationRecord::getTaskId, taskId));
     }
 
+    private MedicationRecord getRecordByTaskForUpdate(Long taskId) {
+        // 与任务锁一致地读取最新结果，不能使用确认前建立的 REPEATABLE READ 快照。
+        return recordMapper.selectOne(new LambdaQueryWrapper<MedicationRecord>()
+                .eq(MedicationRecord::getTaskId, taskId).last("FOR UPDATE"));
+    }
+
     /** 查单条任务 VO（按 id + user_id 越权过滤） */
     public RemindTaskVO getTaskVO(Long userId, Long taskId) {
         RemindTask task = remindTaskMapper.selectOne(
@@ -204,14 +221,15 @@ public class ReminderService {
      * 为所有「执行中」计划生成当天提醒任务（定时器 + 手动触发共用）。
      * 这是服药闭环的「自动转起来」入口：不依赖患者打开 App，
      * 由后台定时扫描所有 ACTIVE 计划，提前把当天每一剂的任务实例生成好。
-     * 幂等靠 uk_plantime_scheduled 唯一键，重复调用不产生脏数据。
+     * 幂等靠 uk_plan_version_scheduled 唯一键，重复调用不产生脏数据。
      */
     @Transactional
     public void generateTodayTasksForAll() {
         // 查全库所有 ACTIVE 计划（不分用户）
         List<MedicationPlan> plans = planMapper.selectList(
                 new LambdaQueryWrapper<MedicationPlan>()
-                        .eq(MedicationPlan::getStatus, "ACTIVE"));
+                        .eq(MedicationPlan::getStatus, "ACTIVE")
+                        .orderByAsc(MedicationPlan::getId));
 
         for (MedicationPlan plan : plans) {
             ensureTodayTasksForPlan(plan);
@@ -236,12 +254,22 @@ public class ReminderService {
         List<RemindTask> expired = remindTaskMapper.selectList(
                 new LambdaQueryWrapper<RemindTask>()
                         .lt(RemindTask::getExpireAt, now)
-                        .in(RemindTask::getStatus, "WAITING", "TRIGGERED"));
+                        .in(RemindTask::getStatus, "WAITING", "TRIGGERED")
+                        .orderByAsc(RemindTask::getPlanId, RemindTask::getId));
 
         for (RemindTask task : expired) {
+            MedicationPlan plan = lockOwnedPlan(task);
+            if (!isCurrentActiveVersion(plan, task)) {
+                remindTaskMapper.update(null, new LambdaUpdateWrapper<RemindTask>()
+                        .eq(RemindTask::getId, task.getId())
+                        .in(RemindTask::getStatus, "WAITING", "TRIGGERED")
+                        .set(RemindTask::getStatus, "CANCELLED"));
+                continue;
+            }
             // 1) 任务状态 → EXPIRED
             int claimed = remindTaskMapper.update(null, new LambdaUpdateWrapper<RemindTask>()
                     .eq(RemindTask::getId, task.getId())
+                    .eq(RemindTask::getPlanVersion, plan.getPlanVersion())
                     .in(RemindTask::getStatus, "WAITING", "TRIGGERED")
                     .lt(RemindTask::getExpireAt, now)
                     .set(RemindTask::getStatus, "EXPIRED"));
@@ -249,7 +277,7 @@ public class ReminderService {
                 continue;
             }
             // 超时也是记录状态；此前的“稍后”不能永久保留成已响应结果。
-            MedicationRecord record = getRecordByTask(task.getId());
+            MedicationRecord record = getRecordByTaskForUpdate(task.getId());
             boolean newRecord = record == null;
             if (newRecord) {
                 record = new MedicationRecord();
@@ -286,17 +314,29 @@ public class ReminderService {
 
     // ==================== 内部方法 ====================
 
+    private MedicationPlan lockOwnedPlan(RemindTask task) {
+        return planMapper.selectOne(new LambdaQueryWrapper<MedicationPlan>()
+                .eq(MedicationPlan::getId, task.getPlanId())
+                .eq(MedicationPlan::getUserId, task.getUserId()).last("FOR UPDATE"));
+    }
+
+    private boolean isCurrentActiveVersion(MedicationPlan plan, RemindTask task) {
+        return plan != null && "ACTIVE".equals(plan.getStatus())
+                && task.getPlanVersion() != null && Objects.equals(plan.getPlanVersion(), task.getPlanVersion());
+    }
+
     /**
      * 按需生成当天任务。
      * 只处理「今天在计划起止日期范围内、状态 ACTIVE」的计划；
      * 每个启用时间点生成一条 remind_task（若尚未生成）。
-     * 幂等：uk_plantime_scheduled 唯一键，重复生成命中冲突即忽略。
+     * 幂等：uk_plan_version_scheduled 唯一键，重复生成命中冲突即忽略。
      */
     private void ensureTodayTasks(Long userId) {
         List<MedicationPlan> plans = planMapper.selectList(
                 new LambdaQueryWrapper<MedicationPlan>()
                         .eq(MedicationPlan::getUserId, userId)
-                        .eq(MedicationPlan::getStatus, "ACTIVE"));
+                        .eq(MedicationPlan::getStatus, "ACTIVE")
+                        .orderByAsc(MedicationPlan::getId));
 
         for (MedicationPlan plan : plans) {
             ensureTodayTasksForPlan(plan);
@@ -326,7 +366,8 @@ public class ReminderService {
                 new LambdaQueryWrapper<PlanTime>()
                         .eq(PlanTime::getPlanId, plan.getId())
                         .eq(PlanTime::getEnabled, 1)
-                        .orderByAsc(PlanTime::getSequenceNo));
+                        .orderByAsc(PlanTime::getSequenceNo)
+                        .last("FOR UPDATE"));
 
         for (PlanTime pt : times) {
             LocalDateTime scheduledAt = LocalDateTime.of(today, pt.getRemindTime());
@@ -339,8 +380,15 @@ public class ReminderService {
 
     /** 生成单条任务（幂等：唯一键冲突则忽略） */
     private void generateTaskIfAbsent(MedicationPlan plan, PlanTime pt, LocalDateTime scheduledAt) {
+        // 历史版本未知的旧规则任务已占用此时点，基线版本不能重复生成它。
+        if (plan.getPlanVersion() == 1 && remindTaskMapper.selectCount(new LambdaQueryWrapper<RemindTask>()
+                .eq(RemindTask::getPlanId, plan.getId()).eq(RemindTask::getPlanTimeId, pt.getId())
+                .eq(RemindTask::getScheduledAt, scheduledAt).isNull(RemindTask::getPlanVersion)) > 0) {
+            return;
+        }
         RemindTask task = new RemindTask();
         task.setPlanId(plan.getId());
+        task.setPlanVersion(plan.getPlanVersion());
         task.setPlanTimeId(pt.getId());
         task.setUserId(plan.getUserId());
         task.setScheduledAt(scheduledAt);
@@ -367,6 +415,7 @@ public class ReminderService {
         RemindTaskVO vo = new RemindTaskVO();
         vo.setId(task.getId());
         vo.setPlanId(task.getPlanId());
+        vo.setPlanVersion(task.getPlanVersion());
         vo.setScheduledAt(task.getScheduledAt());
         vo.setExpireAt(task.getExpireAt());
         vo.setStatus(task.getStatus());

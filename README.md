@@ -79,6 +79,10 @@ CREATE DATABASE medication_system DEFAULT CHARACTER SET utf8mb4;
 
 当前交付目录未附建表脚本，原先说明中的 `project/db/schema.sql` 路径不存在。已有数据库可继续使用；新环境需要先取得并核对原始建表脚本，尤其是提醒任务、服药记录、异常事件的唯一键。仅建空数据库不能直接运行业务。
 
+已有数据库升级到计划版本功能时，先停止后端及定时任务、备份数据库，再在目标库执行一次 [`src/main/resources/db/plan-version.sql`](src/main/resources/db/plan-version.sql)，核对成功后启动新代码。该文件是增量迁移，不能替代完整建表脚本，也不能重复执行。迁移只为当前有效的未完成任务建立基线版本，无法追溯的旧历史版本保留为 `NULL`。
+
+新计划从版本 1 开始，修改、暂停、恢复时递增。旧版待处理任务取消后不再恢复，新任务只按当前版本和未来时间生成；确认和超时扫描重新核对计划状态与版本。已完成任务保留原版本和原定时点；版本号不代表已保存完整的历史药品或剂量快照。
+
 ### 2. 修改数据库配置
 
 `src/main/resources/application.yml`：

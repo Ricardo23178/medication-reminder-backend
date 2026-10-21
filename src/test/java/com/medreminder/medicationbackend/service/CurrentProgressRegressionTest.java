@@ -35,7 +35,7 @@ class CurrentProgressRegressionTest {
     }
 
     @Test
-    void resumeHonorsNewDateRange() {
+    void resumeDoesNotReviveCancelledTasks() {
         PlanMapper plans = mock(PlanMapper.class);
         PlanTimeMapper times = mock(PlanTimeMapper.class);
         RemindTaskMapper tasks = mock(RemindTaskMapper.class);
@@ -44,15 +44,11 @@ class CurrentProgressRegressionTest {
         plan.setStatus("PAUSED");
         plan.setStartDate(LocalDate.now().plusDays(1));
         plan.setEndDate(LocalDate.now().plusDays(2));
-        PlanTime time = new PlanTime();
-        time.setId(3L);
         when(plans.selectOne(any(Wrapper.class))).thenReturn(plan);
-        when(times.selectList(any(Wrapper.class))).thenReturn(List.of(time));
         PlanService service = new PlanService(plans, times, mock(MedicineMapper.class), tasks);
         service.resume(1L, 2L);
-        verify(tasks).update(isNull(), argThat((Wrapper<RemindTask> wrapper) ->
-                wrapper.getSqlSegment().contains("scheduled_at >=")
-                        && wrapper.getSqlSegment().contains("scheduled_at <")));
+        verifyNoInteractions(tasks);
+        assertEquals(2, plan.getPlanVersion());
     }
 
     @Test
@@ -76,12 +72,13 @@ class CurrentProgressRegressionTest {
         RemindTask task = new RemindTask();
         task.setId(2L);
         task.setUserId(1L);
+        task.setPlanVersion(1);
         task.setExpireAt(LocalDateTime.now().minusMinutes(1));
         when(tasks.selectList(any(Wrapper.class))).thenReturn(List.of(task));
         when(tasks.update(isNull(), any(Wrapper.class))).thenReturn(1, 0);
         doAnswer(call -> { ((AbnormalEvent) call.getArgument(0)).setId(5L); return 1; })
                 .when(events).insert(any(AbnormalEvent.class));
-        ReminderService service = new ReminderService(tasks, records, mock(PlanMapper.class),
+        ReminderService service = new ReminderService(tasks, records, activePlanMapper(),
                 mock(PlanTimeMapper.class), mock(MedicineMapper.class), events, notifications);
         service.scanExpiredTasks();
         service.scanExpiredTasks();
@@ -93,7 +90,7 @@ class CurrentProgressRegressionTest {
     static void initializeMapperMetadata() {
         MybatisConfiguration configuration = new MybatisConfiguration();
         for (Class<?> entity : List.of(RemindTask.class, MedicationPlan.class, PlanTime.class,
-                FamilyRelation.class, MedicationRecord.class, AbnormalEvent.class)) {
+                FamilyRelation.class, MedicationRecord.class, AbnormalEvent.class, Medicine.class)) {
             MapperBuilderAssistant assistant = new MapperBuilderAssistant(configuration, "test");
             assistant.setCurrentNamespace(entity.getName());
             TableInfoHelper.initTableInfo(assistant, entity);
@@ -105,10 +102,11 @@ class CurrentProgressRegressionTest {
         MedicationRecordMapper records = mock(MedicationRecordMapper.class);
         RemindTask task = new RemindTask();
         task.setStatus("WAITING");
+        task.setPlanVersion(1);
         task.setExpireAt(LocalDateTime.now().plusHours(1));
         when(tasks.selectOne(any(Wrapper.class))).thenReturn(task);
         when(tasks.update(isNull(), any(Wrapper.class))).thenReturn(1);
-        ReminderService service = new ReminderService(tasks, records, mock(PlanMapper.class),
+        ReminderService service = new ReminderService(tasks, records, activePlanMapper(),
                 mock(PlanTimeMapper.class), mock(MedicineMapper.class), mock(AbnormalEventMapper.class),
                 mock(NotificationService.class));
         ConfirmRequest request = new ConfirmRequest();
@@ -126,6 +124,7 @@ class CurrentProgressRegressionTest {
         MedicationRecordMapper records = mock(MedicationRecordMapper.class);
         RemindTask task = new RemindTask();
         task.setStatus("TRIGGERED");
+        task.setPlanVersion(1);
         task.setExpireAt(LocalDateTime.now().plusHours(1));
         MedicationRecord record = new MedicationRecord();
         record.setId(10L);
@@ -133,7 +132,7 @@ class CurrentProgressRegressionTest {
         when(tasks.selectOne(any(Wrapper.class))).thenReturn(task);
         when(tasks.update(isNull(), any(Wrapper.class))).thenReturn(1);
         when(records.selectOne(any(Wrapper.class))).thenReturn(record);
-        ReminderService service = new ReminderService(tasks, records, mock(PlanMapper.class),
+        ReminderService service = new ReminderService(tasks, records, activePlanMapper(),
                 mock(PlanTimeMapper.class), mock(MedicineMapper.class), mock(AbnormalEventMapper.class),
                 mock(NotificationService.class));
         ConfirmRequest request = new ConfirmRequest();
@@ -151,7 +150,7 @@ class CurrentProgressRegressionTest {
         task.setStatus("CANCELLED");
         task.setExpireAt(LocalDateTime.now().plusHours(1));
         when(tasks.selectOne(any(Wrapper.class))).thenReturn(task);
-        ReminderService service = new ReminderService(tasks, records, mock(PlanMapper.class),
+        ReminderService service = new ReminderService(tasks, records, activePlanMapper(),
                 mock(PlanTimeMapper.class), mock(MedicineMapper.class), mock(AbnormalEventMapper.class),
                 mock(NotificationService.class));
         ConfirmRequest request = new ConfirmRequest();
@@ -166,9 +165,10 @@ class CurrentProgressRegressionTest {
         MedicationRecordMapper records = mock(MedicationRecordMapper.class);
         RemindTask task = new RemindTask();
         task.setStatus("WAITING");
+        task.setPlanVersion(1);
         task.setExpireAt(LocalDateTime.now().plusHours(1));
         when(tasks.selectOne(any(Wrapper.class))).thenReturn(task);
-        ReminderService service = new ReminderService(tasks, records, mock(PlanMapper.class),
+        ReminderService service = new ReminderService(tasks, records, activePlanMapper(),
                 mock(PlanTimeMapper.class), mock(MedicineMapper.class), mock(AbnormalEventMapper.class),
                 mock(NotificationService.class));
         ConfirmRequest request = new ConfirmRequest();
@@ -242,6 +242,14 @@ class CurrentProgressRegressionTest {
         assertEquals(1, stat.getDays().get(0).getTakenCount());
         assertEquals(0, stat.getDays().get(1).getTakenCount());
         assertEquals(100.0, stat.getSummary().getCompletionRate());
+    }
+
+    private PlanMapper activePlanMapper() {
+        PlanMapper plans = mock(PlanMapper.class);
+        MedicationPlan plan = new MedicationPlan();
+        plan.setId(2L); plan.setUserId(1L); plan.setStatus("ACTIVE");
+        when(plans.selectOne(any(Wrapper.class))).thenReturn(plan);
+        return plans;
     }
 
     private PlanRequest validPlan() {

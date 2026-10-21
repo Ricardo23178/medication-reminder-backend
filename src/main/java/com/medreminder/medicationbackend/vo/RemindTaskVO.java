@@ -17,6 +17,9 @@ public class RemindTaskVO {
     /** 计划ID（跳转计划详情用） */
     private Long planId;
 
+    /** 此任务生成时的计划版本。 */
+    private Integer planVersion;
+
     /** 药品名 */
     private String medicineName;
 

@@ -103,6 +103,7 @@ public class PlanService {
         }
         cancelPendingTasks(userId, id);
         applyRequest(plan, req);
+        plan.setPlanVersion(plan.getPlanVersion() + 1);
         plan.setUpdateTime(LocalDateTime.now());
         planMapper.updateById(plan);
 
@@ -111,9 +112,6 @@ public class PlanService {
             planTimeMapper.delete(new LambdaQueryWrapper<PlanTime>()
                     .eq(PlanTime::getPlanId, id));
             saveTimes(id, req.getRemindTimes());
-        }
-        if ("ACTIVE".equals(plan.getStatus()) && req.getRemindTimes() == null) {
-            restoreFutureTasks(userId, id, plan);
         }
         return toVO(plan);
     }
@@ -126,6 +124,7 @@ public class PlanService {
             return null;
         }
         plan.setStatus("PAUSED");
+        plan.setPlanVersion(plan.getPlanVersion() + 1);
         plan.setUpdateTime(LocalDateTime.now());
         planMapper.updateById(plan);
         cancelPendingTasks(userId, id);
@@ -140,9 +139,10 @@ public class PlanService {
             return null;
         }
         plan.setStatus("ACTIVE");
+        plan.setPlanVersion(plan.getPlanVersion() + 1);
         plan.setUpdateTime(LocalDateTime.now());
         planMapper.updateById(plan);
-        restoreFutureTasks(userId, id, plan);
+        // 后续按新版本补生成未来任务，旧任务永久保持取消。
         return toVO(plan);
     }
 
@@ -179,29 +179,6 @@ public class PlanService {
         return planMapper.selectOne(new LambdaQueryWrapper<MedicationPlan>()
                 .eq(MedicationPlan::getId, id).eq(MedicationPlan::getUserId, userId)
                 .last("FOR UPDATE"));
-    }
-
-    private void restoreFutureTasks(Long userId, Long planId, MedicationPlan plan) {
-        // 只恢复当前规则内、未来的提醒，不重放暂停期间错过的任务。
-        List<Long> timeIds = planTimeMapper.selectList(new LambdaQueryWrapper<PlanTime>()
-                        .eq(PlanTime::getPlanId, planId).eq(PlanTime::getEnabled, 1))
-                .stream().map(PlanTime::getId).toList();
-        if (timeIds.isEmpty()) {
-            return;
-        }
-        LambdaUpdateWrapper<RemindTask> restore = new LambdaUpdateWrapper<RemindTask>()
-                .eq(RemindTask::getUserId, userId).eq(RemindTask::getPlanId, planId)
-                .in(RemindTask::getPlanTimeId, timeIds)
-                .eq(RemindTask::getStatus, "CANCELLED")
-                .gt(RemindTask::getScheduledAt, LocalDateTime.now())
-                .set(RemindTask::getStatus, "WAITING");
-        if (plan.getStartDate() != null) {
-            restore.ge(RemindTask::getScheduledAt, plan.getStartDate().atStartOfDay());
-        }
-        if (plan.getEndDate() != null) {
-            restore.lt(RemindTask::getScheduledAt, plan.getEndDate().plusDays(1).atStartOfDay());
-        }
-        taskMapper.update(null, restore);
     }
 
     private void validateRequest(PlanRequest req, boolean creating) {
@@ -264,6 +241,7 @@ public class PlanService {
     private PlanVO toVO(MedicationPlan plan) {
         PlanVO vo = new PlanVO();
         vo.setId(plan.getId());
+        vo.setPlanVersion(plan.getPlanVersion());
         vo.setMedicineId(plan.getMedicineId());
         vo.setDosagePerTime(plan.getDosagePerTime());
         vo.setDosageUnit(plan.getDosageUnit());

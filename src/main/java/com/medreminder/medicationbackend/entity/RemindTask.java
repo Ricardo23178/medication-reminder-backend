@@ -12,7 +12,7 @@ import java.time.LocalDateTime;
  * 状态机：WAITING（等待）→ TRIGGERED（已触发）→ CONFIRMED（已确认）
  *                                              ↘ EXPIRED（超时，产生 abnormal_event）
  *                     ↘ CANCELLED（计划暂停/修改时同步取消）
- * 幂等：uk_plantime_scheduled 唯一键保证「同一规则同一时刻」只生成一条任务。
+ * 幂等：uk_plan_version_scheduled 保证「同一计划、版本、时刻」只生成一条任务。
  */
 @Data
 @TableName("remind_task")
@@ -23,6 +23,9 @@ public class RemindTask {
 
     /** 所属计划 */
     private Long planId;
+
+    /** 生成时的计划版本；迁移前无法追溯的历史任务为 null。 */
+    private Integer planVersion;
 
     /** 来源时间点规则 */
     private Long planTimeId;

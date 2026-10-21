@@ -18,6 +18,8 @@ public class PlanVO {
 
     private Long id;
 
+    private Integer planVersion;
+
     private Long medicineId;
 
     private String medicineName;

@@ -28,6 +28,9 @@ public class MedicationPlan {
     /** 关联药品档案 */
     private Long medicineId;
 
+    /** 规则版本，修改、暂停和恢复时递增。 */
+    private Integer planVersion = 1;
+
     /** 单次服用量 */
     private BigDecimal dosagePerTime;
 
