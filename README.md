@@ -74,17 +74,29 @@ CREATE DATABASE medication_system DEFAULT CHARACTER SET utf8mb4;
 
 然后执行建表脚本（项目根目录 `project/db/schema.sql`）。
 
-### 2. 修改数据库配置
+### 2. 配置本地凭据
 
-`src/main/resources/application.yml`：
+数据库密码与 JWT 密钥不写入版本库。复制模板后填入自己的值：
+
+```bash
+cp src/main/resources/application-local.yml.example src/main/resources/application-local.yml
+```
+
+编辑 `application-local.yml`（该文件已被 `.gitignore` 排除）：
 
 ```yaml
 spring:
   datasource:
-    url: jdbc:mysql://localhost:3306/medication_system?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true
     username: root
-    password: root123456
+    password: 你的数据库密码
+
+jwt:
+  secret: 至少32字节的随机字符串
 ```
+
+也可以不建文件，改用环境变量注入：`DB_USERNAME`、`DB_PASSWORD`、`JWT_SECRET`。
+
+`application-local.yml` 会被 `application.yml` 中默认激活的 `local` profile 自动加载。
 
 ### 3. 启动
 
