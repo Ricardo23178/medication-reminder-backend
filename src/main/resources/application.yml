@@ -5,11 +5,17 @@ spring:
   application:
     name: medication-backend
 
+  # 本地开发凭据（数据库密码、JWT 密钥）统一放在 application-local.yml，
+  # 该文件已被 .gitignore 排除，不会进入版本库。
+  # 首次克隆后：复制 application-local.yml.example 为 application-local.yml 并填入自己的值。
+  profiles:
+    active: ${SPRING_PROFILES_ACTIVE:local}
+
   datasource:
     driver-class-name: com.mysql.cj.jdbc.Driver
     url: jdbc:mysql://localhost:3306/medication_system?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true
-    username: root
-    password: root123456
+    username: ${DB_USERNAME:root}
+    password: ${DB_PASSWORD:}
 
   jackson:
     date-format: yyyy-MM-dd HH:mm:ss
@@ -28,6 +34,6 @@ mybatis-plus:
 
 # JWT 配置：登录成功后签发的令牌
 jwt:
-  # HS256 密钥，至少 32 字节。本机开发够用；答辩部署时换成环境变量注入
-  secret: med-reminder-2026-graduation-jwt-secret-key-32bytes
+  # HS256 密钥，至少 32 字节。默认值仅供本地调试，部署环境请通过环境变量 JWT_SECRET 覆盖。
+  secret: ${JWT_SECRET:dev-only-secret-please-override-in-production-32b}
   expire-hours: 12

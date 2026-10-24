@@ -31,3 +31,10 @@ build/
 
 ### VS Code ###
 .vscode/
+
+### 本地凭据（数据库密码 / JWT 密钥）——严禁提交 ###
+application-local.yml
+application-local-*.yml
+.env
+*.pem
+*.jks

@@ -1,0 +1,17 @@
+# 本地开发配置模板
+#
+# 使用方法：
+#   1. 复制本文件为 application-local.yml（同目录）
+#   2. 填入你自己的 MySQL 密码和 JWT 密钥
+#   3. application-local.yml 不会进入版本库（见 .gitignore）
+#
+# application.yml 中默认激活 local profile，因此启动时会自动加载本文件。
+
+spring:
+  datasource:
+    username: root
+    password: your-mysql-password
+
+jwt:
+  # HS256 密钥，至少 32 字节
+  secret: your-own-secret-key-at-least-32-bytes-long
