@@ -1,0 +1,37 @@
+{
+  "reviewer": "deployment-verification",
+  "findings": [],
+  "residual_risks": [
+    "Business database has not been migrated. MySQL DDL commits implicitly, so an interrupted migration can leave a partially upgraded schema; do not rerun the whole script blindly."
+  ],
+  "testing_gaps": [],
+  "deployment_notes": {
+    "verified_context": [
+      "Caller reports the exact src/main/resources/db/plan-version.sql succeeded against an isolated legacy-schema fixture database, and all 58 tests passed including 9 feature cases. This reviewer did not run them.",
+      "Caller reports backend and scheduler are stopped; business database remains unchanged. README now documents stop/backup/one-time migration/start order and NULL legacy history semantics."
+    ],
+    "pre_deploy": [
+      "Keep backend/schedulers stopped until all postchecks finish; inspect Get-NetTCPConnection -State Listen -LocalPort 8080 -ErrorAction SilentlyContinue and Get-CimInstance Win32_Process | Where-Object { $_.Name -match 'java|javaw' } | Select-Object ProcessId,CommandLine to confirm no medication backend/scheduler process remains.",
+      "Check Get-Item -LiteralPath 'D:\\Codex\\毕业设计\\计划版本验证_20261021_1320\\business-before-plan-version.sql' and Get-FileHash -Algorithm SHA256 -LiteralPath 'D:\\Codex\\毕业设计\\计划版本验证_20261021_1320\\business-before-plan-version.sql': expected 52850 bytes and 4CED3E6039E5667FCD09DB64AAACC8FE6D62C4756630D413A1BDD92E60A8ED66. Use a fresh backup if business data changed after that backup.",
+      "Connect mysql -h localhost -P 3306 -u root -p medication_system, adapting connection/database to actual DB_URL/DB_USERNAME. Run SELECT DATABASE(),VERSION(); SHOW COLUMNS FROM medication_plan LIKE 'plan_version'; SHOW COLUMNS FROM remind_task LIKE 'plan_version'; SHOW INDEX FROM remind_task; expect intended MySQL 8 database, no plan_version columns, old uk_plantime_scheduled present. If already/partially migrated, stop and inspect before executing.",
+      "Save console output from SELECT COUNT(*) FROM medication_plan; SELECT COUNT(*) FROM remind_task; SELECT COUNT(*) FROM medication_record; SELECT status,COUNT(*) FROM remind_task GROUP BY status; SELECT id,status,scheduled_at FROM remind_task WHERE status NOT IN ('WAITING','TRIGGERED') ORDER BY id; these are the unchanged row-count and historical-row baselines.",
+      "Save baseline eligible pending count: SELECT COUNT(*) FROM remind_task t JOIN medication_plan p ON p.id=t.plan_id AND p.user_id=t.user_id JOIN plan_time pt ON pt.id=t.plan_time_id AND pt.plan_id=p.id WHERE t.status IN ('WAITING','TRIGGERED') AND p.status='ACTIVE' AND p.deleted=0 AND pt.enabled=1; pending total minus this count is expected additional CANCELLED rows.",
+      "Run SELECT t.plan_id,t.scheduled_at,COUNT(*) FROM remind_task t JOIN medication_plan p ON p.id=t.plan_id AND p.user_id=t.user_id JOIN plan_time pt ON pt.id=t.plan_time_id AND pt.plan_id=p.id WHERE t.status IN ('WAITING','TRIGGERED') AND p.status='ACTIVE' AND p.deleted=0 AND pt.enabled=1 GROUP BY t.plan_id,t.scheduled_at HAVING COUNT(*)>1; expect no rows before adding the replacement unique index."
+    ],
+    "migration": [
+      "In the verified target mysql session execute SOURCE D:/HuaweiMoveData/Users/86186/Desktop/毕业设计/medication-backend/src/main/resources/db/plan-version.sql; exactly once. Require every statement to finish without errors; do not use --force. The script alters two tables, backfills eligible pending tasks, cancels unmatched pending tasks and replaces the unique index. It is not batched; leave the local app stopped for its duration."
+    ],
+    "post_deploy_before_restart": [
+      "Run SHOW COLUMNS FROM medication_plan LIKE 'plan_version'; SHOW COLUMNS FROM remind_task LIKE 'plan_version'; SHOW INDEX FROM remind_task; expect plan version NOT NULL DEFAULT 1, nullable task version, unique uk_plan_version_scheduled ordered (plan_id,plan_version,scheduled_at), and no uk_plantime_scheduled.",
+      "Run SELECT COUNT(*) FROM medication_plan WHERE plan_version IS NULL OR plan_version<>1; SELECT COUNT(*) FROM remind_task WHERE status IN ('WAITING','TRIGGERED') AND (plan_version IS NULL OR plan_version<>1); SELECT COUNT(*) FROM remind_task WHERE status NOT IN ('WAITING','TRIGGERED') AND plan_version IS NOT NULL; all three must return 0 immediately after migration and before starting the app.",
+      "Rerun baseline counts, status groups and historical SELECT id,status,scheduled_at query. All table row counts and original historical rows must match; pending total must equal the saved eligible count, with the remaining old pending rows added to CANCELLED. Run SELECT COUNT(*) FROM remind_task WHERE plan_version=1; expect saved eligible pending count. Any mismatch or SQL error means keep app stopped and investigate."
+    ],
+    "local_smoke_after_restart": [
+      "Start the new backend using the project's existing startup command only after SQL checks pass. Inspect its console for unknown-column, duplicate-key or SQL errors while loading today's reminders with an existing user. On a disposable demo plan, edit then pause/resume; verify returned planVersion increases and old pending tasks are CANCELLED and rejected when confirmed. Confirm completed tasks and recorded actions remain visible. These UI/API actions intentionally change demo data; do not repeat pre-start baseline assertions afterward."
+    ],
+    "rollback": [
+      "If migration fails, keep backend/scheduler stopped and inspect SHOW COLUMNS/SHOW INDEX plus script statement results. Whole-script retry is unsafe because ADD COLUMN is not idempotent and MySQL DDL cannot be rolled back as one transaction.",
+      "Rollback of the full upgrade requires restoring the verified pre-upgrade backup into a clean replacement database, validating baseline counts/history there, pointing DB_URL at it and starting the previous code. Do not blindly import over the modified database or merely drop the new columns: cancellation updates are not reversed and new-version task history can conflict with the old unique key. Any writes accepted after restart would be lost by restoring the old backup; preserve them for review before choosing restore."
+    ]
+  }
+}

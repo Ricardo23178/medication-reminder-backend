@@ -1,0 +1,96 @@
+[
+  {
+    "reviewer": "correctness",
+    "findings": [
+      {
+        "title": "Read confirmation records after acquiring the plan lock",
+        "severity": "P1",
+        "file": "src/main/java/com/medreminder/medicationbackend/service/ReminderService.java",
+        "line": 108,
+        "confidence": 75,
+        "autofix_class": "gated_auto",
+        "owner": "downstream-resolver",
+        "requires_verification": true,
+        "pre_existing": false,
+        "suggested_fix": "Keep the nonlocking candidate lookup for plan-first lock order, but read medication_record with a current locking SELECT FOR UPDATE after acquiring the plan and task locks. Add an isolated two-transaction REPEATABLE_READ regression where DELAYED commits while a TAKEN request waits on the plan lock; assert task CONFIRMED and record TAKEN.",
+        "first_evidence": "src/main/java/com/medreminder/medicationbackend/service/ReminderService.java:108 -- RemindTask candidate = remindTaskMapper.selectOne(new LambdaQueryWrapper<RemindTask>()"
+      },
+      {
+        "title": "Read current rules before stamping the current version",
+        "severity": "P1",
+        "file": "src/main/java/com/medreminder/medicationbackend/service/ReminderService.java",
+        "line": 378,
+        "confidence": 75,
+        "autofix_class": "gated_auto",
+        "owner": "downstream-resolver",
+        "requires_verification": true,
+        "pre_existing": false,
+        "suggested_fix": "Make the plan_time query in ensureTodayTasksForPlan a current locking read (FOR UPDATE) after the existing plan row lock. Add an isolated two-transaction REPEATABLE_READ regression that edits reminder times between the initial plan-list SELECT and plan locking, then verifies only the new rule's time and ID are emitted with the new plan version.",
+        "first_evidence": "src/main/java/com/medreminder/medicationbackend/service/ReminderService.java:378 -- task.setPlanVersion(plan.getPlanVersion());"
+      }
+    ],
+    "residual_risks": [],
+    "testing_gaps": []
+  },
+  {
+    "reviewer": "testing",
+    "findings": [],
+    "residual_risks": [
+      "Review was source-only: no tests, builds, servers, database changes or mutation testing were run. Caller supplied 55 passing tests including 6 feature tests; the current file now contains a seventh feature test added during review, whose execution is not established by that earlier evidence."
+    ],
+    "testing_gaps": [
+      "Migration coverage: the feature suite starts on a prepared database and inserts already-versioned fixtures. It does not execute plan-version.sql against legacy ACTIVE/PAUSED plans with WAITING/TRIGGERED/CONFIRMED/EXPIRED tasks, assert correct baseline assignment and cancellation, then prove the replacement unique key permits a new version at the same scheduled time while rejecting duplicates within a version. The new legacy completed-task test covers runtime generation only, not the SQL backfill.",
+      "Transactional interleavings: all feature cases use one enclosing @Transactional test and sequential calls. Add a bounded two-connection MySQL regression for update/pause racing confirmation or generation, asserting the old version cannot commit a confirmation after cancellation and generated tasks belong to the committed version. Existing sequential assertions do not verify the newly introduced plan-before-task lock discipline.",
+      "Changed reminder rules: editInvalidatesOldTasksAndPreservesCompletedVersionAndTime explicitly sets remindTimes=null. Add an edit with replacement remindTimes and assert old rule tasks remain cancelled, completed history retains its identifiers/time/version, new future tasks use the replacement schedule and incremented version, and a repeated generation does not duplicate them. This exercises the rule-replacement path together with the changed unique key."
+    ]
+  },
+  {
+    "reviewer": "maintainability",
+    "findings": [],
+    "residual_risks": [],
+    "testing_gaps": []
+  },
+  {
+    "reviewer": "performance",
+    "findings": [],
+    "residual_risks": [],
+    "testing_gaps": []
+  },
+  {
+    "reviewer": "api-contract",
+    "findings": [],
+    "residual_risks": [],
+    "testing_gaps": []
+  },
+  {
+    "reviewer": "data-migration",
+    "findings": [],
+    "residual_risks": [
+      "The migration requires the explicitly documented stopped-backend/scheduler window and database backup. Its DDL is one-time and not a rolling-deployment migration; the business database remains unmigrated according to caller evidence.",
+      "Completed/expired legacy task versions remain NULL by explicit design and cannot be reconstructed. Current generation code includes a baseline-version guard against regenerating a legacy task at the same rule/time."
+    ],
+    "testing_gaps": [
+      "Caller reports that the exact SQL migration was applied and validated against an isolated legacy-schema fixture database. This reviewer performed read-only source inspection only and did not independently execute SQL or tests; production data distribution and migration duration remain unverified."
+    ]
+  },
+  {
+    "reviewer": "reliability",
+    "findings": [],
+    "residual_risks": [],
+    "testing_gaps": []
+  },
+  {
+    "reviewer": "adversarial",
+    "findings": [],
+    "residual_risks": [],
+    "testing_gaps": []
+  },
+  {
+    "reviewer": "deployment-verification",
+    "findings": [],
+    "residual_risks": [
+      "Business database has not been migrated. MySQL DDL commits implicitly, so an interrupted migration can leave a partially upgraded schema; do not rerun the whole script blindly."
+    ],
+    "testing_gaps": []
+  }
+]

@@ -1,0 +1,62 @@
+[
+  {
+    "#": 1,
+    "autofix_class": "gated_auto",
+    "confidence": 75,
+    "file": "src/main/java/com/medreminder/medicationbackend/service/ReminderService.java",
+    "first_evidence": "src/main/java/com/medreminder/medicationbackend/service/ReminderService.java:108 -- RemindTask candidate = remindTaskMapper.selectOne(new LambdaQueryWrapper<RemindTask>()",
+    "independent_reviewers": [
+      "correctness"
+    ],
+    "line": 108,
+    "owner": "downstream-resolver",
+    "pre_existing": false,
+    "requires_verification": true,
+    "reviewers": [
+      "correctness"
+    ],
+    "severity": "P1",
+    "suggested_fix": "Keep the nonlocking candidate lookup for plan-first lock order, but read medication_record with a current locking SELECT FOR UPDATE after acquiring the plan and task locks. Add an isolated two-transaction REPEATABLE_READ regression where DELAYED commits while a TAKEN request waits on the plan lock; assert task CONFIRMED and record TAKEN.",
+    "title": "Read confirmation records after acquiring the plan lock",
+    "why_it_matters": "The newly introduced plain candidate SELECT establishes a MySQL REPEATABLE_READ snapshot before waiting for the plan lock. A concurrent DELAYED confirmation can then commit a TRIGGERED task and its DELAYED record. The waiting TAKEN request obtains the current task through FOR UPDATE but its plain record query still sees the earlier snapshot and returns null. It changes the task to CONFIRMED, attempts a duplicate record insert, catches that exception as idempotent success, and commits a CONFIRMED task whose actual record remains DELAYED. The user receives success while their TAKEN action is lost and later retries cannot repair the record.",
+    "evidence": [
+      "src/main/java/com/medreminder/medicationbackend/service/ReminderService.java:108 -- RemindTask candidate = remindTaskMapper.selectOne(new LambdaQueryWrapper<RemindTask>()",
+      "src/main/java/com/medreminder/medicationbackend/service/ReminderService.java:113-118 -- MedicationPlan plan = lockOwnedPlan(candidate); followed by the task query ending in .last(\"FOR UPDATE\").",
+      "src/main/java/com/medreminder/medicationbackend/service/ReminderService.java:149 -- MedicationRecord existing = getRecordByTask(taskId); getRecordByTask at 199-202 performs a plain SELECT without a locking clause.",
+      "src/main/java/com/medreminder/medicationbackend/service/ReminderService.java:162,167,183-191 -- update to CONFIRMED precedes insert when existing is null; DuplicateKeyException returns 1 without rolling back the already executed task update.",
+      "src/main/java/com/medreminder/medicationbackend/controller/ReminderController.java:75-78 -- code 1 returns the current task VO as HTTP success.",
+      "Repository application.yml uses MySQL with no transaction-isolation override. Under MySQL's default REPEATABLE_READ, consistent reads retain the first snapshot while locking reads read the current state: https://dev.mysql.com/doc/refman/8.0/en/innodb-transaction-isolation-levels.html and https://dev.mysql.com/doc/refman/8.0/en/innodb-locking-reads.html .",
+      "Base version of confirm starts with SELECT FOR UPDATE and has no preceding plain task SELECT; this snapshot-before-wait path is introduced by the changed candidate lookup. This review performed read-only source analysis; no concurrent database reproduction was executed."
+    ]
+  },
+  {
+    "#": 2,
+    "autofix_class": "gated_auto",
+    "confidence": 75,
+    "file": "src/main/java/com/medreminder/medicationbackend/service/ReminderService.java",
+    "first_evidence": "src/main/java/com/medreminder/medicationbackend/service/ReminderService.java:378 -- task.setPlanVersion(plan.getPlanVersion());",
+    "independent_reviewers": [
+      "correctness"
+    ],
+    "line": 378,
+    "owner": "downstream-resolver",
+    "pre_existing": false,
+    "requires_verification": true,
+    "reviewers": [
+      "correctness"
+    ],
+    "severity": "P1",
+    "suggested_fix": "Make the plan_time query in ensureTodayTasksForPlan a current locking read (FOR UPDATE) after the existing plan row lock. Add an isolated two-transaction REPEATABLE_READ regression that edits reminder times between the initial plan-list SELECT and plan locking, then verifies only the new rule's time and ID are emitted with the new plan version.",
+    "title": "Read current rules before stamping the current version",
+    "why_it_matters": "The plan lists at lines 223/329 establish a consistent-read snapshot. If a concurrent plan edit commits a new version and replaces its reminder rules before the generator acquires the plan lock, the locking plan read sees the new version but the subsequent plain plan_time SELECT sees the old rules from that earlier snapshot. The new version assignment then labels an old-rule task with the current version, so confirmation and timeout checks accept it. The later correct generation can additionally create the real new-time task, leaving an obsolete reminder active as part of the current version. The pre-existing stale-rule read becomes a direct dependency of the newly promised current-rule/current-version invariant.",
+    "evidence": [
+      "src/main/java/com/medreminder/medicationbackend/service/ReminderService.java:378 -- task.setPlanVersion(plan.getPlanVersion());",
+      "src/main/java/com/medreminder/medicationbackend/service/ReminderService.java:223-226,329-333 -- initial active-plan lists are plain SELECTs; .orderByAsc(...) adds order but no locking/current-read clause.",
+      "src/main/java/com/medreminder/medicationbackend/service/ReminderService.java:343-344 -- plan = planMapper.selectOne(... .last(\"FOR UPDATE\")); reads the latest committed plan/version after waiting.",
+      "src/main/java/com/medreminder/medicationbackend/service/ReminderService.java:359-363 -- planTimeMapper.selectList(...) ends in .orderByAsc(PlanTime::getSequenceNo) without FOR UPDATE, so it remains a consistent snapshot read.",
+      "src/main/java/com/medreminder/medicationbackend/service/PlanService.java:106-114 -- the concurrent update increments the version and deletes/reinserts PlanTime rows in its transaction.",
+      "provenance: git blame on ReminderService.java:343-344 attributes the existing plan lock to 327f6bc6 (2026-10-14); 359-363 plain rule read predates this change at 082210f5 (2026-10-01). New task.setPlanVersion assignment now treats that mixed state as authoritative current-version work.",
+      "MySQL documentation confirms first-snapshot consistent reads and current locking reads can diverge within REPEATABLE_READ: https://dev.mysql.com/doc/refman/8.0/en/innodb-transaction-isolation-levels.html . No transaction isolation override exists in repository application.yml. This review did not execute concurrent database commands."
+    ]
+  }
+]

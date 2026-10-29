@@ -1,0 +1,12 @@
+{
+  "deployment_notes": [
+    "Keep backend/schedulers stopped, verify target database and backup, then execute src/main/resources/db/plan-version.sql exactly once. README now documents this upgrade order.",
+    "Before migration, check eligible pending rows for duplicate (plan_id,scheduled_at) values. Save row counts and historical task/record baselines. Exact queries are in deployment-verification.json.",
+    "Before restart, verify all plans have baseline version 1, all remaining WAITING/TRIGGERED tasks have version 1, legacy completed/expired versions remain NULL, historical rows/records are unchanged, and uk_plan_version_scheduled replaces uk_plantime_scheduled.",
+    "MySQL DDL implicitly commits. On partial failure inspect actual schema before any retry; whole-script rerun is unsafe. Full rollback requires restoring the verified backup into a clean replacement database."
+  ],
+  "residual_risks": [
+    "Business database migration is still pending at review completion; the upgraded backend must remain stopped until migration and postchecks succeed."
+  ],
+  "testing_gaps": []
+}

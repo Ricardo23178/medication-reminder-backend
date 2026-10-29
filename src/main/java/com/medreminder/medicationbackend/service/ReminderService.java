@@ -130,7 +130,7 @@ public class ReminderService {
         if (!"WAITING".equals(task.getStatus()) && !"TRIGGERED".equals(task.getStatus())) {
             return 4;
         }
-        if (!isCurrentActiveVersion(plan, task)) {
+        if (!isProcessableVersion(plan, task)) {
             return 4;
         }
 
@@ -156,7 +156,7 @@ public class ReminderService {
         }
         LambdaUpdateWrapper<RemindTask> transition = new LambdaUpdateWrapper<RemindTask>()
                 .eq(RemindTask::getId, taskId).eq(RemindTask::getUserId, userId)
-                .eq(RemindTask::getPlanVersion, plan.getPlanVersion())
+                .eq(RemindTask::getPlanVersion, task.getPlanVersion())
                 .in(RemindTask::getStatus, "WAITING", "TRIGGERED")
                 .ge(RemindTask::getExpireAt, now)
                 .set(RemindTask::getStatus, delayed ? "TRIGGERED" : "CONFIRMED");
@@ -257,9 +257,16 @@ public class ReminderService {
                         .in(RemindTask::getStatus, "WAITING", "TRIGGERED")
                         .orderByAsc(RemindTask::getPlanId, RemindTask::getId));
 
-        for (RemindTask task : expired) {
-            MedicationPlan plan = lockOwnedPlan(task);
-            if (!isCurrentActiveVersion(plan, task)) {
+        for (RemindTask candidate : expired) {
+            MedicationPlan plan = lockOwnedPlan(candidate);
+            RemindTask task = remindTaskMapper.selectOne(new LambdaQueryWrapper<RemindTask>()
+                    .eq(RemindTask::getId, candidate.getId()).eq(RemindTask::getUserId, candidate.getUserId())
+                    .last("FOR UPDATE"));
+            if (task == null || (!"WAITING".equals(task.getStatus()) && !"TRIGGERED".equals(task.getStatus()))
+                    || !task.getExpireAt().isBefore(now)) {
+                continue;
+            }
+            if (!isProcessableVersion(plan, task)) {
                 remindTaskMapper.update(null, new LambdaUpdateWrapper<RemindTask>()
                         .eq(RemindTask::getId, task.getId())
                         .in(RemindTask::getStatus, "WAITING", "TRIGGERED")
@@ -269,7 +276,7 @@ public class ReminderService {
             // 1) 任务状态 → EXPIRED
             int claimed = remindTaskMapper.update(null, new LambdaUpdateWrapper<RemindTask>()
                     .eq(RemindTask::getId, task.getId())
-                    .eq(RemindTask::getPlanVersion, plan.getPlanVersion())
+                    .eq(RemindTask::getPlanVersion, task.getPlanVersion())
                     .in(RemindTask::getStatus, "WAITING", "TRIGGERED")
                     .lt(RemindTask::getExpireAt, now)
                     .set(RemindTask::getStatus, "EXPIRED"));
@@ -320,9 +327,10 @@ public class ReminderService {
                 .eq(MedicationPlan::getUserId, task.getUserId()).last("FOR UPDATE"));
     }
 
-    private boolean isCurrentActiveVersion(MedicationPlan plan, RemindTask task) {
-        return plan != null && "ACTIVE".equals(plan.getStatus())
-                && task.getPlanVersion() != null && Objects.equals(plan.getPlanVersion(), task.getPlanVersion());
+    private boolean isProcessableVersion(MedicationPlan plan, RemindTask task) {
+        return plan != null && task.getPlanVersion() != null
+                && ("TRIGGERED".equals(task.getStatus()) || ("ACTIVE".equals(plan.getStatus())
+                && Objects.equals(plan.getPlanVersion(), task.getPlanVersion())));
     }
 
     /**
@@ -376,6 +384,7 @@ public class ReminderService {
             }
             generateTaskIfAbsent(plan, pt, scheduledAt);
         }
+        remindTaskMapper.triggerDueTasks(plan.getUserId(), plan.getId(), plan.getPlanVersion(), LocalDateTime.now());
     }
 
     /** 生成单条任务（幂等：唯一键冲突则忽略） */
@@ -389,6 +398,12 @@ public class ReminderService {
         RemindTask task = new RemindTask();
         task.setPlanId(plan.getId());
         task.setPlanVersion(plan.getPlanVersion());
+        task.setSnapshotMedicineId(plan.getMedicineId());
+        Medicine medicine = medicineMapper.selectById(plan.getMedicineId());
+        task.setSnapshotMedicineName(medicine == null ? null : medicine.getName());
+        task.setSnapshotDosagePerTime(plan.getDosagePerTime());
+        task.setSnapshotDosageUnit(plan.getDosageUnit());
+        task.setSnapshotMealRelation(plan.getMealRelation());
         task.setPlanTimeId(pt.getId());
         task.setUserId(plan.getUserId());
         task.setScheduledAt(scheduledAt);
@@ -421,16 +436,10 @@ public class ReminderService {
         vo.setStatus(task.getStatus());
         vo.setConfirmed("CONFIRMED".equals(task.getStatus()));
 
-        // 查计划 → 药品 + 剂量 + 餐时
-        MedicationPlan plan = planMapper.selectById(task.getPlanId());
-        if (plan != null) {
-            vo.setDosagePerTime(plan.getDosagePerTime());
-            vo.setDosageUnit(plan.getDosageUnit());
-            vo.setMealRelation(plan.getMealRelation());
-
-            Medicine medicine = medicineMapper.selectById(plan.getMedicineId());
-            vo.setMedicineName(medicine == null ? null : medicine.getName());
-        }
+        vo.setMedicineName(task.historicalMedicineName());
+        vo.setDosagePerTime(task.getSnapshotDosagePerTime());
+        vo.setDosageUnit(task.getSnapshotDosageUnit());
+        vo.setMealRelation(task.getSnapshotMealRelation());
 
         // 包括稍后待确认和超时记录，供客户端展示当前操作状态。
         MedicationRecord record = getRecordByTask(task.getId());

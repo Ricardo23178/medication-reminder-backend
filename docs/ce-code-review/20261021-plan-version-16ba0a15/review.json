@@ -1,0 +1,96 @@
+{
+  "status": "complete",
+  "verdict": "Ready to merge",
+  "scope": {
+    "base": "ed51fef68b7040d46570557149155a78a69adc4f",
+    "branch": "optimize/current-progress",
+    "head_sha": "ed51fef68b7040d46570557149155a78a69adc4f",
+    "pr_url": null,
+    "files_changed": 10
+  },
+  "intent": "Add plan/task versions to isolate edited, paused and resumed rules, cancel obsolete pending IDs, generate current-rule tasks, and preserve completed task version/time. Migrate eligible legacy pending tasks to baseline 1 while retaining unknown historical versions as NULL; expose additive optional planVersion fields.",
+  "intent_confidence": "explicit",
+  "reviewers": [
+    "correctness",
+    "testing",
+    "maintainability",
+    "performance",
+    "api-contract",
+    "data-migration",
+    "reliability",
+    "adversarial",
+    "deployment-verification"
+  ],
+  "findings": [],
+  "actionable_findings": [],
+  "triage_groups": [],
+  "pre_existing_findings": [],
+  "requirements_completeness": null,
+  "learnings": [],
+  "agent_native_gaps": [],
+  "deployment_notes": [
+    "Keep backend/schedulers stopped, verify target database and backup, then execute src/main/resources/db/plan-version.sql exactly once. README now documents this upgrade order.",
+    "Before migration, check eligible pending rows for duplicate (plan_id,scheduled_at) values. Save row counts and historical task/record baselines. Exact queries are in deployment-verification.json.",
+    "Before restart, verify all plans have baseline version 1, all remaining WAITING/TRIGGERED tasks have version 1, legacy completed/expired versions remain NULL, historical rows/records are unchanged, and uk_plan_version_scheduled replaces uk_plantime_scheduled.",
+    "MySQL DDL implicitly commits. On partial failure inspect actual schema before any retry; whole-script rerun is unsafe. Full rollback requires restoring the verified backup into a clean replacement database."
+  ],
+  "residual_risks": [
+    "Business database migration is still pending at review completion; the upgraded backend must remain stopped until migration and postchecks succeed."
+  ],
+  "testing_gaps": [],
+  "coverage": {
+    "scope_mode": "local-aligned",
+    "full_roster": true,
+    "exec_lines": 387,
+    "uncounted_files": 2,
+    "reviewer_outcomes_collected": 9,
+    "reviewer_failures": [],
+    "cross_model_pass": "not run",
+    "cross_model_reason": "No different-provider CLI installed; claude, grok, cursor-agent and opencode discovery returned empty. Local adversarial reviewer covered the lens. No reviewed code egressed through a cross-model job.",
+    "validator_shortcuts": 0,
+    "validator_batches": 1,
+    "validator_verdicts": [
+      {
+        "#": 1,
+        "validated": false,
+        "reason": "Current confirm reads existing records through getRecordByTaskForUpdate after acquiring plan and task locks, whose FOR UPDATE bypasses the earlier snapshot, and an inspected regression covers a separately committed DELAYED record followed by TAKEN."
+      },
+      {
+        "#": 2,
+        "validated": false,
+        "reason": "Current ensureTodayTasksForPlan reads enabled plan_time rows with FOR UPDATE after locking the plan, preventing old snapshot rules from receiving the current version, and an inspected regression covers rules replaced after snapshot creation."
+      }
+    ],
+    "validator_drop_count": 2,
+    "validator_drop_reason": "Both initial P1 candidates were fixed by the caller before independent final validation.",
+    "validator_failures": [],
+    "degraded_blockers": [],
+    "malformed_findings": 0,
+    "malformed_returns": 0,
+    "suppressed_by_confidence": {},
+    "mode_aware_demotions": 0,
+    "project_standards": "not run: successful search found no applicable AGENTS.md, CLAUDE.md or CODING_STANDARDS.md files",
+    "settlement_suppression": "not evaluated: no plan discovered",
+    "excluded_untracked": [
+      "docs/ce-code-review/20261021-plan-version-16ba0a15/** (review artifacts)"
+    ],
+    "resolved_during_review": [
+      "Confirmation now uses a locking current record read after plan/task locks.",
+      "Task generation now uses a locking current PlanTime read after the plan lock.",
+      "Caller additionally fixed baseline-v1 regeneration beside a matching legacy NULL-version task, preserving unknown historical version."
+    ],
+    "observed_test_evidence": [
+      "Read snapshot-green.log: 58 tests, 0 failures, 0 errors, 0 skipped; BUILD SUCCESS, including 9 feature cases.",
+      "Read fixtures-final.log after final fixture setup changes: 9 tests, 0 failures, 0 errors, 0 skipped; BUILD SUCCESS.",
+      "Caller reports exact migration SQL passed isolated legacy-schema fixture validation; business DB unchanged.",
+      "Final git diff --check passed."
+    ],
+    "limitations": [
+      "Reviewers ran no tests, builds, servers or database mutations; runtime results were read from caller-generated logs or explicitly attributed to caller evidence.",
+      "No cross-model corroboration or real-load trial. Deterministic MySQL REPEATABLE_READ regressions exercise the two identified snapshot interleavings."
+    ],
+    "advisory_reconciliation": "Initial testing gaps about stale snapshots/rule replacement are addressed by the new regressions. One-time migration was independently exercised by caller; absence of a checked-in migration harness is not retained as a blocker."
+  },
+  "artifact_path": "D:\\HuaweiMoveData\\Users\\86186\\Desktop\\毕业设计\\medication-backend\\docs\\ce-code-review\\20261021-plan-version-16ba0a15",
+  "run_id": "20261021-plan-version-16ba0a15"
+}

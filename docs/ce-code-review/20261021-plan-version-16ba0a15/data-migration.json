@@ -1,0 +1,11 @@
+{
+  "reviewer": "data-migration",
+  "findings": [],
+  "residual_risks": [
+    "The migration requires the explicitly documented stopped-backend/scheduler window and database backup. Its DDL is one-time and not a rolling-deployment migration; the business database remains unmigrated according to caller evidence.",
+    "Completed/expired legacy task versions remain NULL by explicit design and cannot be reconstructed. Current generation code includes a baseline-version guard against regenerating a legacy task at the same rule/time."
+  ],
+  "testing_gaps": [
+    "Caller reports that the exact SQL migration was applied and validated against an isolated legacy-schema fixture database. This reviewer performed read-only source inspection only and did not independently execute SQL or tests; production data distribution and migration duration remain unverified."
+  ]
+}

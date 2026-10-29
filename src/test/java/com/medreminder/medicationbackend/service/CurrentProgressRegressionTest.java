@@ -30,7 +30,8 @@ class CurrentProgressRegressionTest {
         assertEquals("PAUSED", service.pause(1L, 2L).getStatus());
         verify(tasks).update(isNull(), argThat((Wrapper<RemindTask> wrapper) ->
                 wrapper.getSqlSegment().contains("user_id") && wrapper.getSqlSegment().contains("plan_id")
-                        && wrapper.getSqlSegment().contains("status IN")));
+                        && wrapper.getSqlSegment().contains("status =")
+                        && wrapper.getSqlSegment().contains("scheduled_at >")));
         assertNotNull(plan.getUpdateTime());
     }
 
@@ -72,9 +73,11 @@ class CurrentProgressRegressionTest {
         RemindTask task = new RemindTask();
         task.setId(2L);
         task.setUserId(1L);
+        task.setStatus("WAITING");
         task.setPlanVersion(1);
         task.setExpireAt(LocalDateTime.now().minusMinutes(1));
         when(tasks.selectList(any(Wrapper.class))).thenReturn(List.of(task));
+        when(tasks.selectOne(any(Wrapper.class))).thenReturn(task);
         when(tasks.update(isNull(), any(Wrapper.class))).thenReturn(1, 0);
         doAnswer(call -> { ((AbnormalEvent) call.getArgument(0)).setId(5L); return 1; })
                 .when(events).insert(any(AbnormalEvent.class));
@@ -213,7 +216,7 @@ class CurrentProgressRegressionTest {
         relation.setScope("PLAN_STATUS");
         when(relations.selectList(any(Wrapper.class))).thenReturn(List.of(relation));
         FamilyService service = new FamilyService(relations, mock(UserMapper.class), events,
-                mock(RemindTaskMapper.class), mock(PlanMapper.class), mock(MedicineMapper.class), mock(NotificationMapper.class));
+                mock(RemindTaskMapper.class), mock(NotificationMapper.class));
         assertTrue(service.listAuthorizedAbnormalEvents(2L).isEmpty());
         verifyNoInteractions(events);
     }

@@ -43,6 +43,121 @@ class PlanVersionIntegrationTest {
     @Autowired JdbcTemplate jdbc;
     @Autowired ObjectMapper json;
     @Autowired PlatformTransactionManager transactionManager;
+    @Autowired com.medreminder.medicationbackend.service.RecordService history;
+    @Autowired com.medreminder.medicationbackend.service.FamilyService families;
+    @Autowired FamilyRelationMapper relations;
+
+    @Test
+    void newlyGeneratedDueTaskIsTriggeredDuringTheSameLookup() {
+        Fixture f = fixture();
+        jdbc.update("UPDATE medication_plan SET update_time=? WHERE id=?", LocalDate.now().atStartOfDay(), f.planId);
+        jdbc.update("UPDATE plan_time SET remind_time=? WHERE id=?", LocalTime.MIDNIGHT, f.timeId);
+        var generated = reminders.listToday(f.userId);
+        assertEquals(1, generated.size());
+        assertEquals("TRIGGERED", generated.get(0).getStatus());
+    }
+
+    @Test
+    void familyAbnormalHistoryUsesTheGeneratedMedicineSnapshot() {
+        Fixture owner = fixture(), family = fixture();
+        Long taskId = reminders.listToday(owner.userId).get(0).getId();
+        RemindTask old = tasks.selectById(taskId);
+        old.setScheduledAt(LocalDateTime.now().minusHours(3).withNano(0));
+        old.setExpireAt(old.getScheduledAt().plusHours(2)); old.setStatus("TRIGGERED"); tasks.updateById(old);
+        FamilyRelation relation = new FamilyRelation(); relation.setOwnerUserId(owner.userId); relation.setFamilyUserId(family.userId);
+        relation.setRelationStatus("ACTIVE"); relation.setScope("ABNORMAL_EVENT"); relation.setBindTime(LocalDateTime.now().minusDays(2)); relations.insert(relation);
+        Medicine medicine = medicines.selectById(owner.medicineId); medicine.setName("新版档案名称"); medicines.updateById(medicine);
+        PlanRequest edit = request(owner.medicineId); edit.setRemindTimes(null); plans.update(owner.userId, owner.planId, edit);
+        reminders.scanExpiredTasks();
+        var events = families.listAuthorizedAbnormalEvents(family.userId);
+        assertEquals(1, events.size());
+        assertEquals("版本测试虚构药品", events.get(0).getMedicineName());
+    }
+
+    @Test
+    void pausePreservesTriggeredTaskAndItsOriginalConfirmationWindow() {
+        Fixture f = fixture();
+        RemindTask triggered = task(f, LocalDateTime.now().minusMinutes(1).withNano(0));
+        triggered.setStatus("TRIGGERED"); tasks.updateById(triggered);
+        LocalDateTime deadline = triggered.getExpireAt();
+        plans.pause(f.userId, f.planId);
+        RemindTask retained = tasks.selectById(triggered.getId());
+        assertEquals("TRIGGERED", retained.getStatus());
+        assertEquals(1, retained.getPlanVersion());
+        assertEquals(deadline, retained.getExpireAt());
+        assertEquals(0, reminders.confirm(f.userId, triggered.getId(), taken()));
+        assertEquals("CONFIRMED", tasks.selectById(triggered.getId()).getStatus());
+    }
+
+    @Test
+    void editKeepsGeneratedMedicineAndDosageInTaskAndRecordHistory() {
+        Fixture f = fixture();
+        Long taskId = reminders.listToday(f.userId).get(0).getId();
+        Medicine replacement = new Medicine(); replacement.setUserId(f.userId);
+        replacement.setName("新版虚构药品"); medicines.insert(replacement);
+        PlanRequest edit = request(replacement.getId()); edit.setRemindTimes(null);
+        edit.setDosagePerTime(new BigDecimal("2.00")); plans.update(f.userId, f.planId, edit);
+        var old = reminders.getTaskVO(f.userId, taskId);
+        assertEquals("版本测试虚构药品", old.getMedicineName());
+        assertEquals(0, BigDecimal.ONE.compareTo(old.getDosagePerTime()));
+        MedicationRecord record = new MedicationRecord(); record.setUserId(f.userId); record.setTaskId(taskId);
+        record.setAction("TAKEN"); record.setActionTime(LocalDateTime.now()); record.setSource("APP"); records.insert(record);
+        assertEquals("版本测试虚构药品", history.listMine(f.userId).get(0).getMedicineName());
+    }
+
+    @Test
+    void changingMedicineNameDoesNotRewriteGeneratedTask() {
+        Fixture f = fixture();
+        Long taskId = reminders.listToday(f.userId).get(0).getId();
+        Medicine medicine = medicines.selectById(f.medicineId); medicine.setName("修改后的档案名"); medicines.updateById(medicine);
+        assertEquals("版本测试虚构药品", reminders.getTaskVO(f.userId, taskId).getMedicineName());
+    }
+
+    @Test
+    void planChangeTriggersDueTaskBeforeCancellingOnlyFutureTasks() {
+        Fixture f = fixture();
+        RemindTask due = task(f, LocalDateTime.now().minusMinutes(1).withNano(0));
+        RemindTask future = task(f, LocalDateTime.now().plusHours(1).withNano(0));
+        plans.pause(f.userId, f.planId);
+        assertEquals("TRIGGERED", tasks.selectById(due.getId()).getStatus());
+        assertEquals(1, tasks.selectById(due.getId()).getTriggerCount());
+        assertEquals("CANCELLED", tasks.selectById(future.getId()).getStatus());
+        assertEquals(0, reminders.confirm(f.userId, due.getId(), taken()));
+        assertEquals(4, reminders.confirm(f.userId, future.getId(), taken()));
+    }
+
+    @Test
+    void todayLookupTriggersDueTaskOnlyOnce() {
+        Fixture f = fixture();
+        RemindTask due = task(f, LocalDateTime.now().minusMinutes(1).withNano(0));
+        reminders.listToday(f.userId);
+        reminders.listToday(f.userId);
+        assertEquals("TRIGGERED", tasks.selectById(due.getId()).getStatus());
+        assertEquals(1, tasks.selectById(due.getId()).getTriggerCount());
+    }
+
+    @Test
+    void oldTriggeredTaskStillExpiresAfterPauseAndProducesOneAbnormalEvent() {
+        Fixture f = fixture();
+        RemindTask old = task(f, LocalDateTime.now().minusHours(3).withNano(0));
+        old.setStatus("TRIGGERED"); tasks.updateById(old);
+        plans.pause(f.userId, f.planId);
+        reminders.scanExpiredTasks(); reminders.scanExpiredTasks();
+        assertEquals("EXPIRED", tasks.selectById(old.getId()).getStatus());
+        assertEquals(1, version(old.getId()));
+        assertEquals(1, jdbc.queryForObject("SELECT COUNT(*) FROM abnormal_event WHERE task_id=?", Integer.class, old.getId()));
+        assertEquals("UNCONFIRMED", jdbc.queryForObject("SELECT action FROM medication_record WHERE task_id=?", String.class, old.getId()));
+    }
+
+    @Test
+    void unknownLegacyHistoryDoesNotBorrowCurrentMedicineDetails() {
+        Fixture f = fixture();
+        RemindTask legacy = task(f, LocalDateTime.now().minusHours(3).withNano(0));
+        jdbc.update("UPDATE remind_task SET status='EXPIRED',plan_version=NULL WHERE id=?", legacy.getId());
+        var old = reminders.getTaskVO(f.userId, legacy.getId());
+        assertEquals("历史药品信息未留存", old.getMedicineName());
+        assertNull(old.getDosagePerTime());
+    }
 
     @Test
     void newPlanStartsAtVersionOne() {
@@ -178,6 +293,42 @@ class PlanVersionIntegrationTest {
         } finally { cleanup(f); }
     }
 
+    @Test
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    void historicalConfirmationUsesPauseCommittedAfterItsSnapshotWasCreated() {
+        requireIsolatedDatabase();
+        Fixture f = requiresNew().execute(status -> fixture());
+        try {
+            RemindTask task = task(f, LocalDateTime.now().minusMinutes(1).withNano(0));
+            int result = repeatableRead().execute(status -> {
+                jdbc.queryForObject("SELECT COUNT(*) FROM remind_task WHERE plan_id=?", Integer.class, f.planId);
+                requiresNew().execute(inner -> plans.pause(f.userId, f.planId));
+                return reminders.confirm(f.userId, task.getId(), taken());
+            });
+            assertEquals(0, result);
+            assertEquals("CONFIRMED", tasks.selectById(task.getId()).getStatus());
+            assertEquals(1, version(task.getId()));
+        } finally { cleanup(f); }
+    }
+
+    @Test
+    @Transactional(propagation = Propagation.NOT_SUPPORTED)
+    void expiryReadsTriggerCommittedAfterItsSnapshotWasCreated() {
+        requireIsolatedDatabase();
+        Fixture f = requiresNew().execute(status -> fixture());
+        try {
+            RemindTask task = task(f, LocalDateTime.now().minusHours(3).withNano(0));
+            repeatableRead().execute(status -> {
+                jdbc.queryForObject("SELECT COUNT(*) FROM remind_task WHERE plan_id=?", Integer.class, f.planId);
+                requiresNew().execute(inner -> plans.pause(f.userId, f.planId));
+                reminders.scanExpiredTasks();
+                return null;
+            });
+            assertEquals("EXPIRED", tasks.selectById(task.getId()).getStatus());
+            assertEquals(1, jdbc.queryForObject("SELECT COUNT(*) FROM abnormal_event WHERE task_id=?", Integer.class, task.getId()));
+        } finally { cleanup(f); }
+    }
+
     private TransactionTemplate repeatableRead() {
         TransactionTemplate transaction = new TransactionTemplate(transactionManager);
         transaction.setIsolationLevel(TransactionDefinition.ISOLATION_REPEATABLE_READ);
@@ -196,6 +347,8 @@ class PlanVersionIntegrationTest {
     }
 
     private void cleanup(Fixture f) {
+        jdbc.update("DELETE FROM notification WHERE receiver_id=?", f.userId);
+        jdbc.update("DELETE FROM abnormal_event WHERE user_id=?", f.userId);
         jdbc.update("DELETE FROM medication_record WHERE user_id=?", f.userId);
         jdbc.update("DELETE FROM remind_task WHERE user_id=?", f.userId);
         jdbc.update("DELETE FROM plan_time WHERE plan_id=?", f.planId);

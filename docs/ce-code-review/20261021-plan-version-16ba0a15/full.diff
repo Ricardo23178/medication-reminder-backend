@@ -1,0 +1,1085 @@
+diff --git a/README.md b/README.md
+index 48de62b..d465434 100644
+--- a/README.md
++++ b/README.md
+@@ -72,20 +72,24 @@ src/main/java/com/medreminder/medicationbackend/
+ - MySQL 8.0（数据库 `medication_system`，账号 `root`）
+ 
+ ### 1. 建库建表
+ 
+ ```sql
+ CREATE DATABASE medication_system DEFAULT CHARACTER SET utf8mb4;
+ ```
+ 
+ 当前交付目录未附建表脚本，原先说明中的 `project/db/schema.sql` 路径不存在。已有数据库可继续使用；新环境需要先取得并核对原始建表脚本，尤其是提醒任务、服药记录、异常事件的唯一键。仅建空数据库不能直接运行业务。
+ 
++已有数据库升级到计划版本功能时，先停止后端及定时任务、备份数据库，再在目标库执行一次 [`src/main/resources/db/plan-version.sql`](src/main/resources/db/plan-version.sql)，核对成功后启动新代码。该文件是增量迁移，不能替代完整建表脚本，也不能重复执行。迁移只为当前有效的未完成任务建立基线版本，无法追溯的旧历史版本保留为 `NULL`。
++
++新计划从版本 1 开始，修改、暂停、恢复时递增。旧版待处理任务取消后不再恢复，新任务只按当前版本和未来时间生成；确认和超时扫描重新核对计划状态与版本。已完成任务保留原版本和原定时点；版本号不代表已保存完整的历史药品或剂量快照。
++
+ ### 2. 修改数据库配置
+ 
+ `src/main/resources/application.yml`：
+ 
+ ```yaml
+ spring:
+   datasource:
+     url: jdbc:mysql://localhost:3306/medication_system?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true
+     username: root
+     password: root123456
+diff --git a/src/main/java/com/medreminder/medicationbackend/entity/MedicationPlan.java b/src/main/java/com/medreminder/medicationbackend/entity/MedicationPlan.java
+index 764600c..a655ba3 100644
+--- a/src/main/java/com/medreminder/medicationbackend/entity/MedicationPlan.java
++++ b/src/main/java/com/medreminder/medicationbackend/entity/MedicationPlan.java
+@@ -21,20 +21,23 @@ public class MedicationPlan {
+ 
+     @TableId(type = IdType.AUTO)
+     private Long id;
+ 
+     /** 归属用户（越权过滤字段） */
+     private Long userId;
+ 
+     /** 关联药品档案 */
+     private Long medicineId;
+ 
++    /** 规则版本，修改、暂停和恢复时递增。 */
++    private Integer planVersion = 1;
++
+     /** 单次服用量 */
+     private BigDecimal dosagePerTime;
+ 
+     /** 服用量单位 */
+     private String dosageUnit;
+ 
+     /** 开始日期 */
+     private LocalDate startDate;
+ 
+     /** 结束日期，null=长期用药 */
+diff --git a/src/main/java/com/medreminder/medicationbackend/entity/RemindTask.java b/src/main/java/com/medreminder/medicationbackend/entity/RemindTask.java
+index 8851e4b..4b539a9 100644
+--- a/src/main/java/com/medreminder/medicationbackend/entity/RemindTask.java
++++ b/src/main/java/com/medreminder/medicationbackend/entity/RemindTask.java
+@@ -5,32 +5,35 @@ import com.baomidou.mybatisplus.annotation.TableId;
+ import com.baomidou.mybatisplus.annotation.TableName;
+ import lombok.Data;
+ 
+ import java.time.LocalDateTime;
+ 
+ /**
+  * 对应 remind_task 表（具体提醒任务）。
+  * 状态机：WAITING（等待）→ TRIGGERED（已触发）→ CONFIRMED（已确认）
+  *                                              ↘ EXPIRED（超时，产生 abnormal_event）
+  *                     ↘ CANCELLED（计划暂停/修改时同步取消）
+- * 幂等：uk_plantime_scheduled 唯一键保证「同一规则同一时刻」只生成一条任务。
++ * 幂等：uk_plan_version_scheduled 保证「同一计划、版本、时刻」只生成一条任务。
+  */
+ @Data
+ @TableName("remind_task")
+ public class RemindTask {
+ 
+     @TableId(type = IdType.AUTO)
+     private Long id;
+ 
+     /** 所属计划 */
+     private Long planId;
+ 
++    /** 生成时的计划版本；迁移前无法追溯的历史任务为 null。 */
++    private Integer planVersion;
++
+     /** 来源时间点规则 */
+     private Long planTimeId;
+ 
+     /** 冗余归属用户（按人查当天任务免联表） */
+     private Long userId;
+ 
+     /** 计划触发时间 */
+     private LocalDateTime scheduledAt;
+ 
+     /** 容忍窗口截止时间（超此即判超时） */
+diff --git a/src/main/java/com/medreminder/medicationbackend/service/PlanService.java b/src/main/java/com/medreminder/medicationbackend/service/PlanService.java
+index 3c037a8..6a2d418 100644
+--- a/src/main/java/com/medreminder/medicationbackend/service/PlanService.java
++++ b/src/main/java/com/medreminder/medicationbackend/service/PlanService.java
+@@ -96,60 +96,60 @@ public class PlanService {
+             return null;
+         }
+         validateRequest(req, false);
+         Medicine medicine = medicineMapper.selectOne(new LambdaQueryWrapper<Medicine>()
+                 .eq(Medicine::getId, req.getMedicineId()).eq(Medicine::getUserId, userId));
+         if (medicine == null) {
+             throw new IllegalArgumentException("药品不存在或无权使用");
+         }
+         cancelPendingTasks(userId, id);
+         applyRequest(plan, req);
++        plan.setPlanVersion(plan.getPlanVersion() + 1);
+         plan.setUpdateTime(LocalDateTime.now());
+         planMapper.updateById(plan);
+ 
+         // 时间点：先删旧再插新（简单可靠，避免比对差异）
+         if (req.getRemindTimes() != null) {
+             planTimeMapper.delete(new LambdaQueryWrapper<PlanTime>()
+                     .eq(PlanTime::getPlanId, id));
+             saveTimes(id, req.getRemindTimes());
+         }
+-        if ("ACTIVE".equals(plan.getStatus()) && req.getRemindTimes() == null) {
+-            restoreFutureTasks(userId, id, plan);
+-        }
+         return toVO(plan);
+     }
+ 
+     /** 暂停计划：ACTIVE → PAUSED。非本人或状态不对返回 null */
+     @Transactional
+     public PlanVO pause(Long userId, Long id) {
+         MedicationPlan plan = findOwnedForUpdate(userId, id);
+         if (plan == null || !"ACTIVE".equals(plan.getStatus())) {
+             return null;
+         }
+         plan.setStatus("PAUSED");
++        plan.setPlanVersion(plan.getPlanVersion() + 1);
+         plan.setUpdateTime(LocalDateTime.now());
+         planMapper.updateById(plan);
+         cancelPendingTasks(userId, id);
+         return toVO(plan);
+     }
+ 
+     /** 恢复计划：PAUSED → ACTIVE。非本人或状态不对返回 null */
+     @Transactional
+     public PlanVO resume(Long userId, Long id) {
+         MedicationPlan plan = findOwnedForUpdate(userId, id);
+         if (plan == null || !"PAUSED".equals(plan.getStatus())) {
+             return null;
+         }
+         plan.setStatus("ACTIVE");
++        plan.setPlanVersion(plan.getPlanVersion() + 1);
+         plan.setUpdateTime(LocalDateTime.now());
+         planMapper.updateById(plan);
+-        restoreFutureTasks(userId, id, plan);
++        // 后续按新版本补生成未来任务，旧任务永久保持取消。
+         return toVO(plan);
+     }
+ 
+     /** 删除计划（逻辑删除，同时逻辑删除时间点）。非本人返回 false */
+     @Transactional
+     public boolean delete(Long userId, Long id) {
+         MedicationPlan plan = findOwnedForUpdate(userId, id);
+         if (plan == null) {
+             return false;
+         }
+@@ -174,43 +174,20 @@ public class PlanService {
+                 .in(RemindTask::getStatus, "WAITING", "TRIGGERED")
+                 .set(RemindTask::getStatus, "CANCELLED"));
+     }
+ 
+     private MedicationPlan findOwnedForUpdate(Long userId, Long id) {
+         return planMapper.selectOne(new LambdaQueryWrapper<MedicationPlan>()
+                 .eq(MedicationPlan::getId, id).eq(MedicationPlan::getUserId, userId)
+                 .last("FOR UPDATE"));
+     }
+ 
+-    private void restoreFutureTasks(Long userId, Long planId, MedicationPlan plan) {
+-        // 只恢复当前规则内、未来的提醒，不重放暂停期间错过的任务。
+-        List<Long> timeIds = planTimeMapper.selectList(new LambdaQueryWrapper<PlanTime>()
+-                        .eq(PlanTime::getPlanId, planId).eq(PlanTime::getEnabled, 1))
+-                .stream().map(PlanTime::getId).toList();
+-        if (timeIds.isEmpty()) {
+-            return;
+-        }
+-        LambdaUpdateWrapper<RemindTask> restore = new LambdaUpdateWrapper<RemindTask>()
+-                .eq(RemindTask::getUserId, userId).eq(RemindTask::getPlanId, planId)
+-                .in(RemindTask::getPlanTimeId, timeIds)
+-                .eq(RemindTask::getStatus, "CANCELLED")
+-                .gt(RemindTask::getScheduledAt, LocalDateTime.now())
+-                .set(RemindTask::getStatus, "WAITING");
+-        if (plan.getStartDate() != null) {
+-            restore.ge(RemindTask::getScheduledAt, plan.getStartDate().atStartOfDay());
+-        }
+-        if (plan.getEndDate() != null) {
+-            restore.lt(RemindTask::getScheduledAt, plan.getEndDate().plusDays(1).atStartOfDay());
+-        }
+-        taskMapper.update(null, restore);
+-    }
+-
+     private void validateRequest(PlanRequest req, boolean creating) {
+         if (req.getStartDate() == null || (req.getEndDate() != null
+                 && req.getEndDate().isBefore(req.getStartDate()))) {
+             throw new IllegalArgumentException("结束日期不能早于开始日期");
+         }
+         if (req.getDosagePerTime() != null && req.getDosagePerTime().signum() <= 0) {
+             throw new IllegalArgumentException("单次服用量必须大于零");
+         }
+         if (req.getMealRelation() != null && (req.getMealRelation() < 0 || req.getMealRelation() > 4)) {
+             throw new IllegalArgumentException("餐时类型不正确");
+@@ -257,20 +234,21 @@ public class PlanService {
+             pt.setSequenceNo(seq++);
+             pt.setEnabled(1);
+             planTimeMapper.insert(pt);
+         }
+     }
+ 
+     /** 组装 VO：查时间点 + 查药品名 */
+     private PlanVO toVO(MedicationPlan plan) {
+         PlanVO vo = new PlanVO();
+         vo.setId(plan.getId());
++        vo.setPlanVersion(plan.getPlanVersion());
+         vo.setMedicineId(plan.getMedicineId());
+         vo.setDosagePerTime(plan.getDosagePerTime());
+         vo.setDosageUnit(plan.getDosageUnit());
+         vo.setStartDate(plan.getStartDate());
+         vo.setEndDate(plan.getEndDate());
+         vo.setMealRelation(plan.getMealRelation());
+         vo.setStatus(plan.getStatus());
+         vo.setRemark(plan.getRemark());
+         vo.setCreateTime(plan.getCreateTime());
+         vo.setUpdateTime(plan.getUpdateTime());
+diff --git a/src/main/java/com/medreminder/medicationbackend/service/ReminderService.java b/src/main/java/com/medreminder/medicationbackend/service/ReminderService.java
+index 4827d08..e55b06a 100644
+--- a/src/main/java/com/medreminder/medicationbackend/service/ReminderService.java
++++ b/src/main/java/com/medreminder/medicationbackend/service/ReminderService.java
+@@ -16,28 +16,29 @@ import com.medreminder.medicationbackend.mapper.PlanMapper;
+ import com.medreminder.medicationbackend.mapper.PlanTimeMapper;
+ import com.medreminder.medicationbackend.mapper.RemindTaskMapper;
+ import com.medreminder.medicationbackend.vo.RemindTaskVO;
+ import org.springframework.dao.DuplicateKeyException;
+ import org.springframework.stereotype.Service;
+ import org.springframework.transaction.annotation.Transactional;
+ 
+ import java.time.LocalDate;
+ import java.time.LocalDateTime;
+ import java.util.List;
++import java.util.Objects;
+ import java.util.stream.Collectors;
+ 
+ /**
+  * 提醒任务业务 —— 系统「心脏」。
+  *
+  * 三大职责：
+  * 1. 生成当天提醒任务：按 ACTIVE 计划 + 时间点，滚动生成当天「实例」（remind_task）。
+- *    幂等靠 uk_plantime_scheduled 唯一键 —— 重复生成命中唯一键冲突，忽略即可。
++ *    幂等靠 uk_plan_version_scheduled 唯一键 —— 同一版本同一时刻不重复生成。
+  * 2. 查当天清单：返回今天该吃哪些药（带药品名、剂量、状态）。
+  * 3. 已服/跳过：WAITING/TRIGGERED → CONFIRMED；稍后保持TRIGGERED，允许再次确认。
+  *    幂等靠 uk_task 唯一键 —— 重复点击命中唯一键，返回首次结果，不报错、不重复记录。
+  *
+  * 设计说明（导师方案第十一节）：
+  * - 按天滚动生成，查询按需补生成，定时器独立运行。
+  * - 越权：任务按 user_id 过滤，确认前 findOwned 校验归属。
+  */
+ @Service
+ public class ReminderService {
+@@ -96,63 +97,73 @@ public class ReminderService {
+      * 确认服药（幂等）。
+      * 返回结果含义（用 Result 层区分，这里返回标记）：
+      *   0 = 确认成功（首次）
+      *   1 = 幂等命中（已确认过，返回首次结果）
+      *   2 = 任务不存在或无权操作
+      *   3 = 任务已过期（超出容忍窗口）
+      *   4 = 任务已取消或状态已变更
+      */
+     @Transactional
+     public int confirm(Long userId, Long taskId, ConfirmRequest req) {
+-        // 越权校验：任务必须属于当前用户
++        // 先取得归属计划，再统一按“计划 → 任务”加锁，与改版、暂停和扫描保持一致。
++        RemindTask candidate = remindTaskMapper.selectOne(new LambdaQueryWrapper<RemindTask>()
++                .eq(RemindTask::getId, taskId).eq(RemindTask::getUserId, userId));
++        if (candidate == null) {
++            return 2;
++        }
++        MedicationPlan plan = lockOwnedPlan(candidate);
+         RemindTask task = remindTaskMapper.selectOne(
+                 new LambdaQueryWrapper<RemindTask>()
+                         .eq(RemindTask::getId, taskId)
+                         .eq(RemindTask::getUserId, userId)
+                         .last("FOR UPDATE"));
+         if (task == null) {
+             return 2;
+         }
+ 
+         // 幂等：已确认过，直接返回首次结果，不再重复落库
+         if ("CONFIRMED".equals(task.getStatus())) {
+             return 1;
+         }
+         if ("EXPIRED".equals(task.getStatus())) {
+             return 3;
+         }
+         if (!"WAITING".equals(task.getStatus()) && !"TRIGGERED".equals(task.getStatus())) {
+             return 4;
+         }
++        if (!isCurrentActiveVersion(plan, task)) {
++            return 4;
++        }
+ 
+         // 超时校验：超出容忍窗口，不允许再确认
+         LocalDateTime now = LocalDateTime.now();
+         if (now.isAfter(task.getExpireAt())) {
+             return 3;
+         }
+ 
+         String action = validateAction(req.getAction());
+         boolean delayed = "DELAYED".equals(action);
+         int delayMinutes = req.getDelayMinutes() == null ? 15 : req.getDelayMinutes();
+         if (delayed && (delayMinutes < 1 || delayMinutes > 120)) {
+             throw new IllegalArgumentException("稍后时间必须为1至120分钟");
+         }
+-        MedicationRecord existing = getRecordByTask(taskId);
++        MedicationRecord existing = getRecordByTaskForUpdate(taskId);
+         if (existing != null && req.getClientRequestId() != null && !req.getClientRequestId().isBlank()
+                 && req.getClientRequestId().equals(existing.getClientRequestId())) {
+             return 1;
+         }
+         if (existing != null && !"DELAYED".equals(existing.getAction())) {
+             return 1;
+         }
+         LambdaUpdateWrapper<RemindTask> transition = new LambdaUpdateWrapper<RemindTask>()
+                 .eq(RemindTask::getId, taskId).eq(RemindTask::getUserId, userId)
++                .eq(RemindTask::getPlanVersion, plan.getPlanVersion())
+                 .in(RemindTask::getStatus, "WAITING", "TRIGGERED")
+                 .ge(RemindTask::getExpireAt, now)
+                 .set(RemindTask::getStatus, delayed ? "TRIGGERED" : "CONFIRMED");
+         if (delayed) {
+             transition.set(RemindTask::getLastTriggerAt, now.plusMinutes(delayMinutes))
+                     .set(RemindTask::getExpireAt, now.plusMinutes(delayMinutes + CONFIRM_WINDOW_MINUTES));
+         }
+         int claimed = remindTaskMapper.update(null, transition);
+         if (claimed == 0) {
+             RemindTask current = remindTaskMapper.selectById(taskId);
+@@ -184,41 +195,48 @@ public class ReminderService {
+         return 0;
+     }
+ 
+     /** 查某任务的当前确认结果（幂等命中时返回给前端展示） */
+     public MedicationRecord getRecordByTask(Long taskId) {
+         return recordMapper.selectOne(
+                 new LambdaQueryWrapper<MedicationRecord>()
+                         .eq(MedicationRecord::getTaskId, taskId));
+     }
+ 
++    private MedicationRecord getRecordByTaskForUpdate(Long taskId) {
++        // 与任务锁一致地读取最新结果，不能使用确认前建立的 REPEATABLE READ 快照。
++        return recordMapper.selectOne(new LambdaQueryWrapper<MedicationRecord>()
++                .eq(MedicationRecord::getTaskId, taskId).last("FOR UPDATE"));
++    }
++
+     /** 查单条任务 VO（按 id + user_id 越权过滤） */
+     public RemindTaskVO getTaskVO(Long userId, Long taskId) {
+         RemindTask task = remindTaskMapper.selectOne(
+                 new LambdaQueryWrapper<RemindTask>()
+                         .eq(RemindTask::getId, taskId)
+                         .eq(RemindTask::getUserId, userId));
+         return task == null ? null : toVO(task);
+     }
+ 
+     /**
+      * 为所有「执行中」计划生成当天提醒任务（定时器 + 手动触发共用）。
+      * 这是服药闭环的「自动转起来」入口：不依赖患者打开 App，
+      * 由后台定时扫描所有 ACTIVE 计划，提前把当天每一剂的任务实例生成好。
+-     * 幂等靠 uk_plantime_scheduled 唯一键，重复调用不产生脏数据。
++     * 幂等靠 uk_plan_version_scheduled 唯一键，重复调用不产生脏数据。
+      */
+     @Transactional
+     public void generateTodayTasksForAll() {
+         // 查全库所有 ACTIVE 计划（不分用户）
+         List<MedicationPlan> plans = planMapper.selectList(
+                 new LambdaQueryWrapper<MedicationPlan>()
+-                        .eq(MedicationPlan::getStatus, "ACTIVE"));
++                        .eq(MedicationPlan::getStatus, "ACTIVE")
++                        .orderByAsc(MedicationPlan::getId));
+ 
+         for (MedicationPlan plan : plans) {
+             ensureTodayTasksForPlan(plan);
+         }
+     }
+ 
+     /**
+      * 扫描所有「已超容忍窗口、但还没确认」的任务，判定为超时未确认：
+      * 1. 任务状态 WAITING/TRIGGERED → 置为 EXPIRED；
+      * 2. 生成一条 abnormal_event（type=UNCONFIRMED_TIMEOUT），供家属在协同模块查看；
+@@ -229,34 +247,44 @@ public class ReminderService {
+      * 所以事件类型用 UNCONFIRMED（未确认），不是 MISSED（漏服）。
+      */
+     @Transactional
+     public void scanExpiredTasks() {
+         LocalDateTime now = LocalDateTime.now();
+ 
+         // 找出「到期时间已过、但仍处于未确认状态」的任务
+         List<RemindTask> expired = remindTaskMapper.selectList(
+                 new LambdaQueryWrapper<RemindTask>()
+                         .lt(RemindTask::getExpireAt, now)
+-                        .in(RemindTask::getStatus, "WAITING", "TRIGGERED"));
++                        .in(RemindTask::getStatus, "WAITING", "TRIGGERED")
++                        .orderByAsc(RemindTask::getPlanId, RemindTask::getId));
+ 
+         for (RemindTask task : expired) {
++            MedicationPlan plan = lockOwnedPlan(task);
++            if (!isCurrentActiveVersion(plan, task)) {
++                remindTaskMapper.update(null, new LambdaUpdateWrapper<RemindTask>()
++                        .eq(RemindTask::getId, task.getId())
++                        .in(RemindTask::getStatus, "WAITING", "TRIGGERED")
++                        .set(RemindTask::getStatus, "CANCELLED"));
++                continue;
++            }
+             // 1) 任务状态 → EXPIRED
+             int claimed = remindTaskMapper.update(null, new LambdaUpdateWrapper<RemindTask>()
+                     .eq(RemindTask::getId, task.getId())
++                    .eq(RemindTask::getPlanVersion, plan.getPlanVersion())
+                     .in(RemindTask::getStatus, "WAITING", "TRIGGERED")
+                     .lt(RemindTask::getExpireAt, now)
+                     .set(RemindTask::getStatus, "EXPIRED"));
+             if (claimed == 0) {
+                 continue;
+             }
+             // 超时也是记录状态；此前的“稍后”不能永久保留成已响应结果。
+-            MedicationRecord record = getRecordByTask(task.getId());
++            MedicationRecord record = getRecordByTaskForUpdate(task.getId());
+             boolean newRecord = record == null;
+             if (newRecord) {
+                 record = new MedicationRecord();
+                 record.setTaskId(task.getId());
+                 record.setUserId(task.getUserId());
+             }
+             record.setAction("UNCONFIRMED");
+             record.setActionTime(task.getExpireAt());
+             record.setSource("SYSTEM");
+             if (newRecord) {
+@@ -279,31 +307,43 @@ public class ReminderService {
+                 continue;
+             }
+ 
+             // 与事件同事务入队，包含本人以及事件发生时已授权的家属。
+             notificationService.queueAbnormalEvent(event);
+         }
+     }
+ 
+     // ==================== 内部方法 ====================
+ 
++    private MedicationPlan lockOwnedPlan(RemindTask task) {
++        return planMapper.selectOne(new LambdaQueryWrapper<MedicationPlan>()
++                .eq(MedicationPlan::getId, task.getPlanId())
++                .eq(MedicationPlan::getUserId, task.getUserId()).last("FOR UPDATE"));
++    }
++
++    private boolean isCurrentActiveVersion(MedicationPlan plan, RemindTask task) {
++        return plan != null && "ACTIVE".equals(plan.getStatus())
++                && task.getPlanVersion() != null && Objects.equals(plan.getPlanVersion(), task.getPlanVersion());
++    }
++
+     /**
+      * 按需生成当天任务。
+      * 只处理「今天在计划起止日期范围内、状态 ACTIVE」的计划；
+      * 每个启用时间点生成一条 remind_task（若尚未生成）。
+-     * 幂等：uk_plantime_scheduled 唯一键，重复生成命中冲突即忽略。
++     * 幂等：uk_plan_version_scheduled 唯一键，重复生成命中冲突即忽略。
+      */
+     private void ensureTodayTasks(Long userId) {
+         List<MedicationPlan> plans = planMapper.selectList(
+                 new LambdaQueryWrapper<MedicationPlan>()
+                         .eq(MedicationPlan::getUserId, userId)
+-                        .eq(MedicationPlan::getStatus, "ACTIVE"));
++                        .eq(MedicationPlan::getStatus, "ACTIVE")
++                        .orderByAsc(MedicationPlan::getId));
+ 
+         for (MedicationPlan plan : plans) {
+             ensureTodayTasksForPlan(plan);
+         }
+     }
+ 
+     /** 为单个计划生成当天任务（起止日期过滤 + 逐个时间点生成，幂等） */
+     private void ensureTodayTasksForPlan(MedicationPlan plan) {
+         // 与计划暂停、修改共享计划行锁，避免扫描旧计划后又插入新任务。
+         plan = planMapper.selectOne(new LambdaQueryWrapper<MedicationPlan>()
+@@ -319,35 +359,43 @@ public class ReminderService {
+         }
+         if (plan.getEndDate() != null && today.isAfter(plan.getEndDate())) {
+             return;
+         }
+ 
+         // 查该计划的启用时间点
+         List<PlanTime> times = planTimeMapper.selectList(
+                 new LambdaQueryWrapper<PlanTime>()
+                         .eq(PlanTime::getPlanId, plan.getId())
+                         .eq(PlanTime::getEnabled, 1)
+-                        .orderByAsc(PlanTime::getSequenceNo));
++                        .orderByAsc(PlanTime::getSequenceNo)
++                        .last("FOR UPDATE"));
+ 
+         for (PlanTime pt : times) {
+             LocalDateTime scheduledAt = LocalDateTime.of(today, pt.getRemindTime());
+             if (plan.getUpdateTime() != null && scheduledAt.isBefore(plan.getUpdateTime())) {
+                 continue;
+             }
+             generateTaskIfAbsent(plan, pt, scheduledAt);
+         }
+     }
+ 
+     /** 生成单条任务（幂等：唯一键冲突则忽略） */
+     private void generateTaskIfAbsent(MedicationPlan plan, PlanTime pt, LocalDateTime scheduledAt) {
++        // 历史版本未知的旧规则任务已占用此时点，基线版本不能重复生成它。
++        if (plan.getPlanVersion() == 1 && remindTaskMapper.selectCount(new LambdaQueryWrapper<RemindTask>()
++                .eq(RemindTask::getPlanId, plan.getId()).eq(RemindTask::getPlanTimeId, pt.getId())
++                .eq(RemindTask::getScheduledAt, scheduledAt).isNull(RemindTask::getPlanVersion)) > 0) {
++            return;
++        }
+         RemindTask task = new RemindTask();
+         task.setPlanId(plan.getId());
++        task.setPlanVersion(plan.getPlanVersion());
+         task.setPlanTimeId(pt.getId());
+         task.setUserId(plan.getUserId());
+         task.setScheduledAt(scheduledAt);
+         task.setExpireAt(scheduledAt.plusMinutes(CONFIRM_WINDOW_MINUTES));
+         task.setStatus("WAITING");
+         task.setTriggerCount(0);
+         try {
+             remindTaskMapper.insert(task);
+         } catch (DuplicateKeyException e) {
+             // 已存在，忽略（幂等）
+@@ -360,20 +408,21 @@ public class ReminderService {
+             return action;
+         }
+         throw new IllegalArgumentException("操作类型必须为TAKEN、DELAYED或SKIPPED");
+     }
+ 
+     /** 组装 VO：补药品名 + 剂量 + 确认状态 */
+     private RemindTaskVO toVO(RemindTask task) {
+         RemindTaskVO vo = new RemindTaskVO();
+         vo.setId(task.getId());
+         vo.setPlanId(task.getPlanId());
++        vo.setPlanVersion(task.getPlanVersion());
+         vo.setScheduledAt(task.getScheduledAt());
+         vo.setExpireAt(task.getExpireAt());
+         vo.setStatus(task.getStatus());
+         vo.setConfirmed("CONFIRMED".equals(task.getStatus()));
+ 
+         // 查计划 → 药品 + 剂量 + 餐时
+         MedicationPlan plan = planMapper.selectById(task.getPlanId());
+         if (plan != null) {
+             vo.setDosagePerTime(plan.getDosagePerTime());
+             vo.setDosageUnit(plan.getDosageUnit());
+diff --git a/src/main/java/com/medreminder/medicationbackend/vo/PlanVO.java b/src/main/java/com/medreminder/medicationbackend/vo/PlanVO.java
+index 9111473..2cf1379 100644
+--- a/src/main/java/com/medreminder/medicationbackend/vo/PlanVO.java
++++ b/src/main/java/com/medreminder/medicationbackend/vo/PlanVO.java
+@@ -11,20 +11,22 @@ import java.util.List;
+ /**
+  * 用药计划详情返回对象（VO）。
+  * 相比实体，多了药品名称（medicineName）和时间点列表（times），
+  * 前端一次拿到完整信息，不用再发多个请求。
+  */
+ @Data
+ public class PlanVO {
+ 
+     private Long id;
+ 
++    private Integer planVersion;
++
+     private Long medicineId;
+ 
+     private String medicineName;
+ 
+     private BigDecimal dosagePerTime;
+ 
+     private String dosageUnit;
+ 
+     private LocalDate startDate;
+ 
+diff --git a/src/main/java/com/medreminder/medicationbackend/vo/RemindTaskVO.java b/src/main/java/com/medreminder/medicationbackend/vo/RemindTaskVO.java
+index 4c84e24..a6cc650 100644
+--- a/src/main/java/com/medreminder/medicationbackend/vo/RemindTaskVO.java
++++ b/src/main/java/com/medreminder/medicationbackend/vo/RemindTaskVO.java
+@@ -10,20 +10,23 @@ import java.time.LocalDateTime;
+  * 前端一次拿到「几点吃什么、吃多少」，不用再查药品。
+  */
+ @Data
+ public class RemindTaskVO {
+ 
+     private Long id;
+ 
+     /** 计划ID（跳转计划详情用） */
+     private Long planId;
+ 
++    /** 此任务生成时的计划版本。 */
++    private Integer planVersion;
++
+     /** 药品名 */
+     private String medicineName;
+ 
+     /** 单次服用量 */
+     private java.math.BigDecimal dosagePerTime;
+ 
+     /** 服用量单位 */
+     private String dosageUnit;
+ 
+     /** 0=无关 1=餐前 2=餐后 3=晨起空腹 4=睡前 */
+diff --git a/src/main/resources/db/plan-version.sql b/src/main/resources/db/plan-version.sql
+new file mode 100644
+index 0000000..d0ccca0
+--- /dev/null
++++ b/src/main/resources/db/plan-version.sql
+@@ -0,0 +1,25 @@
++-- One-time MySQL 8 migration. Stop backend/schedulers and back up the database first.
++-- Existing completed/expired task versions cannot be reconstructed: leave them NULL.
++ALTER TABLE medication_plan
++    ADD COLUMN plan_version INT NOT NULL DEFAULT 1 COMMENT 'Plan rule version';
++
++ALTER TABLE remind_task
++    ADD COLUMN plan_version INT NULL COMMENT 'Version at generation; NULL for unknown legacy history';
++
++-- Only current, active, unfinished rules receive baseline version 1.
++UPDATE remind_task t
++JOIN medication_plan p ON p.id=t.plan_id AND p.user_id=t.user_id
++JOIN plan_time pt ON pt.id=t.plan_time_id AND pt.plan_id=p.id
++SET t.plan_version=p.plan_version
++WHERE t.status IN ('WAITING','TRIGGERED')
++  AND p.status='ACTIVE' AND p.deleted=0 AND pt.enabled=1;
++
++UPDATE remind_task
++SET status='CANCELLED'
++WHERE status IN ('WAITING','TRIGGERED') AND plan_version IS NULL;
++
++-- NULL legacy versions may repeat; all newly generated tasks carry a non-NULL version.
++-- Add the replacement before dropping the old key in the same ALTER.
++ALTER TABLE remind_task
++    ADD UNIQUE KEY uk_plan_version_scheduled (plan_id, plan_version, scheduled_at),
++    DROP INDEX uk_plantime_scheduled;
+diff --git a/src/test/java/com/medreminder/medicationbackend/PlanVersionIntegrationTest.java b/src/test/java/com/medreminder/medicationbackend/PlanVersionIntegrationTest.java
+new file mode 100644
+index 0000000..2fc463e
+--- /dev/null
++++ b/src/test/java/com/medreminder/medicationbackend/PlanVersionIntegrationTest.java
+@@ -0,0 +1,239 @@
++package com.medreminder.medicationbackend;
++
++import com.fasterxml.jackson.databind.ObjectMapper;
++import com.medreminder.medicationbackend.dto.ConfirmRequest;
++import com.medreminder.medicationbackend.dto.PlanRequest;
++import com.medreminder.medicationbackend.entity.*;
++import com.medreminder.medicationbackend.mapper.*;
++import com.medreminder.medicationbackend.service.PlanService;
++import com.medreminder.medicationbackend.service.ReminderService;
++import org.junit.jupiter.api.Test;
++import org.junit.jupiter.api.condition.EnabledIfEnvironmentVariable;
++import org.springframework.beans.factory.annotation.Autowired;
++import org.springframework.boot.test.context.SpringBootTest;
++import org.springframework.jdbc.core.JdbcTemplate;
++import org.springframework.transaction.annotation.Transactional;
++import org.springframework.transaction.annotation.Propagation;
++import org.springframework.transaction.PlatformTransactionManager;
++import org.springframework.transaction.TransactionDefinition;
++import org.springframework.transaction.support.TransactionTemplate;
++
++import java.math.BigDecimal;
++import java.time.LocalDate;
++import java.time.LocalDateTime;
++import java.time.LocalTime;
++import java.util.List;
++import java.util.UUID;
++
++import static org.junit.jupiter.api.Assertions.*;
++
++/** Isolated MySQL only: ordinary fixtures roll back; committed interleaving fixtures use explicit cleanup. */
++@EnabledIfEnvironmentVariable(named = "RUN_MYSQL_INTEGRATION_TESTS", matches = "true")
++@SpringBootTest(properties = {"reminder.scheduling.enabled=false", "notification.delivery.enabled=false",
++        "app.initialize-admin=false", "app.initialize-console=false"})
++@Transactional
++class PlanVersionIntegrationTest {
++    @Autowired PlanService plans;
++    @Autowired ReminderService reminders;
++    @Autowired UserMapper users;
++    @Autowired MedicineMapper medicines;
++    @Autowired PlanTimeMapper times;
++    @Autowired RemindTaskMapper tasks;
++    @Autowired MedicationRecordMapper records;
++    @Autowired JdbcTemplate jdbc;
++    @Autowired ObjectMapper json;
++    @Autowired PlatformTransactionManager transactionManager;
++
++    @Test
++    void newPlanStartsAtVersionOne() {
++        Fixture f = fixture();
++        assertEquals(1, json.valueToTree(plans.getOwned(f.userId, f.planId)).path("planVersion").asInt());
++    }
++
++    @Test
++    void editInvalidatesOldTasksAndPreservesCompletedVersionAndTime() {
++        Fixture f = fixture();
++        RemindTask pending = task(f, LocalDate.now().plusDays(1).atTime(8, 0));
++        RemindTask completed = task(f, LocalDate.now().atTime(0, 0));
++        completed.setStatus("CONFIRMED"); tasks.updateById(completed);
++        MedicationRecord record = new MedicationRecord();
++        record.setTaskId(completed.getId()); record.setUserId(f.userId);
++        record.setAction("TAKEN"); record.setActionTime(LocalDateTime.now()); record.setSource("APP");
++        records.insert(record);
++
++        PlanRequest edit = request(f.medicineId);
++        edit.setRemindTimes(null); edit.setDosagePerTime(new BigDecimal("2.00"));
++        assertEquals(2, json.valueToTree(plans.update(f.userId, f.planId, edit)).path("planVersion").asInt());
++        assertEquals("CANCELLED", tasks.selectById(pending.getId()).getStatus());
++        assertEquals(4, reminders.confirm(f.userId, pending.getId(), taken()));
++        assertEquals("CONFIRMED", tasks.selectById(completed.getId()).getStatus());
++        assertEquals(completed.getScheduledAt(), tasks.selectById(completed.getId()).getScheduledAt());
++        assertEquals(1, version(completed.getId()));
++        assertEquals("TAKEN", records.selectById(record.getId()).getAction());
++        assertEquals(1, reminders.confirm(f.userId, completed.getId(), taken()));
++    }
++
++    @Test
++    void resumeCreatesNewVersionInsteadOfRevivingOldTask() {
++        Fixture f = fixture();
++        RemindTask old = task(f, LocalDate.now().atTime(LocalTime.MAX.withNano(0)));
++        assertEquals(2, json.valueToTree(plans.pause(f.userId, f.planId)).path("planVersion").asInt());
++        assertEquals(3, json.valueToTree(plans.resume(f.userId, f.planId)).path("planVersion").asInt());
++        assertEquals("CANCELLED", tasks.selectById(old.getId()).getStatus());
++        reminders.listToday(f.userId);
++        reminders.listToday(f.userId);
++        assertEquals(1, jdbc.queryForObject("SELECT COUNT(*) FROM remind_task WHERE plan_id=? AND plan_version=3", Integer.class, f.planId));
++        assertEquals(1, version(old.getId()));
++        assertEquals(4, reminders.confirm(f.userId, old.getId(), taken()));
++    }
++
++    @Test
++    void staleWaitingTaskCannotBeConfirmedOrPublishTimeoutEvent() {
++        Fixture f = fixture();
++        RemindTask old = task(f, LocalDateTime.now().minusHours(3).withNano(0));
++        old.setExpireAt(LocalDateTime.now().plusHours(1)); tasks.updateById(old);
++        // Simulate an old queued request whose cancellation state has not been refreshed.
++        jdbc.update("UPDATE medication_plan SET plan_version=2 WHERE id=?", f.planId);
++        assertEquals(4, reminders.confirm(f.userId, old.getId(), taken()));
++        assertEquals(0, jdbc.queryForObject("SELECT COUNT(*) FROM medication_record WHERE task_id=?", Integer.class, old.getId()));
++        jdbc.update("UPDATE remind_task SET expire_at=? WHERE id=?", LocalDateTime.now().minusMinutes(1), old.getId());
++        reminders.scanExpiredTasks();
++        assertEquals(0, jdbc.queryForObject("SELECT COUNT(*) FROM abnormal_event WHERE task_id=?", Integer.class, old.getId()));
++    }
++
++    @Test
++    void pausedPlanRejectsWaitingTaskEvenWhenVersionsMatch() {
++        Fixture f = fixture();
++        RemindTask task = task(f, LocalDateTime.now().withNano(0));
++        jdbc.update("UPDATE medication_plan SET status='PAUSED' WHERE id=?", f.planId);
++        assertEquals(4, reminders.confirm(f.userId, task.getId(), taken()));
++        assertEquals(0, jdbc.queryForObject("SELECT COUNT(*) FROM medication_record WHERE task_id=?", Integer.class, task.getId()));
++    }
++
++    @Test
++    void resumingPlanStartingTomorrowDoesNotGenerateTodayTasks() {
++        Fixture f = fixture();
++        plans.pause(f.userId, f.planId);
++        PlanRequest edit = request(f.medicineId); edit.setStartDate(LocalDate.now().plusDays(1));
++        edit.setRemindTimes(null); plans.update(f.userId, f.planId, edit);
++        plans.resume(f.userId, f.planId);
++        reminders.listToday(f.userId);
++        assertEquals(0, jdbc.queryForObject("SELECT COUNT(*) FROM remind_task WHERE plan_id=?", Integer.class, f.planId));
++    }
++
++    @Test
++    void legacyCompletedTaskIsNotRegeneratedAsBaselineVersionOne() {
++        Fixture f = fixture();
++        RemindTask legacy = task(f, LocalDate.now().atTime(LocalTime.MAX.withNano(0)));
++        jdbc.update("UPDATE remind_task SET status='CONFIRMED',plan_version=NULL WHERE id=?", legacy.getId());
++        reminders.listToday(f.userId);
++        assertEquals(1, jdbc.queryForObject("SELECT COUNT(*) FROM remind_task WHERE plan_id=?", Integer.class, f.planId));
++        assertNull(jdbc.queryForObject("SELECT plan_version FROM remind_task WHERE id=?", Integer.class, legacy.getId()));
++    }
++
++    @Test
++    @Transactional(propagation = Propagation.NOT_SUPPORTED)
++    void generatorUsesRulesCommittedAfterItsSnapshotWasCreated() {
++        requireIsolatedDatabase();
++        Fixture f = requiresNew().execute(status -> fixture());
++        try {
++            jdbc.update("UPDATE plan_time SET remind_time='12:00:00' WHERE id=?", f.timeId);
++            repeatableRead().execute(status -> {
++                jdbc.queryForObject("SELECT COUNT(*) FROM plan_time WHERE plan_id=?", Integer.class, f.planId);
++                requiresNew().execute(inner -> {
++                    jdbc.update("UPDATE medication_plan SET plan_version=2,update_time=? WHERE id=?", LocalDate.now().atStartOfDay(), f.planId);
++                    jdbc.update("DELETE FROM plan_time WHERE plan_id=?", f.planId);
++                    PlanTime current = new PlanTime(); current.setPlanId(f.planId);
++                    current.setRemindTime(LocalTime.MAX.withNano(0)); current.setEnabled(1); times.insert(current);
++                    return null;
++                });
++                var generated = reminders.listToday(f.userId);
++                assertEquals(1, generated.size());
++                assertEquals(LocalTime.of(23, 59, 59), generated.get(0).getScheduledAt().toLocalTime());
++                assertEquals(2, generated.get(0).getPlanVersion());
++                return null;
++            });
++        } finally { cleanup(f); }
++    }
++
++    @Test
++    @Transactional(propagation = Propagation.NOT_SUPPORTED)
++    void confirmationUsesDelayRecordCommittedAfterItsSnapshotWasCreated() {
++        requireIsolatedDatabase();
++        Fixture f = requiresNew().execute(status -> fixture());
++        try {
++            RemindTask task = task(f, LocalDateTime.now().withNano(0));
++            int result = repeatableRead().execute(status -> {
++                jdbc.queryForObject("SELECT COUNT(*) FROM medication_record WHERE task_id=?", Integer.class, task.getId());
++                requiresNew().execute(inner -> {
++                    ConfirmRequest delay = new ConfirmRequest(); delay.setAction("DELAYED"); delay.setDelayMinutes(15);
++                    assertEquals(0, reminders.confirm(f.userId, task.getId(), delay));
++                    return null;
++                });
++                return reminders.confirm(f.userId, task.getId(), taken());
++            });
++            assertEquals(0, result);
++            assertEquals("CONFIRMED", tasks.selectById(task.getId()).getStatus());
++            assertEquals("TAKEN", jdbc.queryForObject("SELECT action FROM medication_record WHERE task_id=?", String.class, task.getId()));
++        } finally { cleanup(f); }
++    }
++
++    private TransactionTemplate repeatableRead() {
++        TransactionTemplate transaction = new TransactionTemplate(transactionManager);
++        transaction.setIsolationLevel(TransactionDefinition.ISOLATION_REPEATABLE_READ);
++        return transaction;
++    }
++
++    private TransactionTemplate requiresNew() {
++        TransactionTemplate transaction = new TransactionTemplate(transactionManager);
++        transaction.setPropagationBehavior(TransactionDefinition.PROPAGATION_REQUIRES_NEW);
++        return transaction;
++    }
++
++    private void requireIsolatedDatabase() {
++        assertTrue(jdbc.queryForObject("SELECT DATABASE()", String.class).startsWith("medication_version_test_"),
++                "These committed interleaving fixtures must use an isolated medication_version_test_ database");
++    }
++
++    private void cleanup(Fixture f) {
++        jdbc.update("DELETE FROM medication_record WHERE user_id=?", f.userId);
++        jdbc.update("DELETE FROM remind_task WHERE user_id=?", f.userId);
++        jdbc.update("DELETE FROM plan_time WHERE plan_id=?", f.planId);
++        jdbc.update("DELETE FROM medication_plan WHERE id=? AND user_id=?", f.planId, f.userId);
++        jdbc.update("DELETE FROM medicine WHERE id=? AND user_id=?", f.medicineId, f.userId);
++        jdbc.update("DELETE FROM sys_user WHERE id=?", f.userId);
++    }
++
++    private Fixture fixture() {
++        User user = new User(); user.setAccount("version_" + UUID.randomUUID().toString().substring(0, 22));
++        user.setPasswordHash("test-only-not-a-login-password"); user.setRole("USER"); user.setStatus(1);
++        users.insert(user);
++        Medicine medicine = new Medicine(); medicine.setUserId(user.getId()); medicine.setName("版本测试虚构药品");
++        medicines.insert(medicine);
++        Long planId = plans.create(user.getId(), request(medicine.getId())).getId();
++        PlanTime time = times.selectList(new com.baomidou.mybatisplus.core.conditions.query.LambdaQueryWrapper<PlanTime>()
++                .eq(PlanTime::getPlanId, planId)).get(0);
++        // A future point on the current day independent of the hour the test runs.
++        time.setRemindTime(LocalTime.MAX.withNano(0)); times.updateById(time);
++        return new Fixture(user.getId(), medicine.getId(), planId, time.getId());
++    }
++
++    private PlanRequest request(Long medicineId) {
++        PlanRequest req = new PlanRequest(); req.setMedicineId(medicineId); req.setStartDate(LocalDate.now());
++        req.setDosagePerTime(BigDecimal.ONE); req.setRemindTimes(List.of("23:59")); return req;
++    }
++
++    private RemindTask task(Fixture f, LocalDateTime at) {
++        RemindTask task = new RemindTask(); task.setUserId(f.userId); task.setPlanId(f.planId);
++        task.setPlanTimeId(f.timeId); task.setScheduledAt(at); task.setExpireAt(at.plusHours(2));
++        task.setStatus("WAITING"); task.setPlanVersion(1); tasks.insert(task);
++        return task;
++    }
++
++    private int version(Long taskId) {
++        return jdbc.queryForObject("SELECT plan_version FROM remind_task WHERE id=?", Integer.class, taskId);
++    }
++
++    private ConfirmRequest taken() { ConfirmRequest req = new ConfirmRequest(); req.setAction("TAKEN"); return req; }
++    private record Fixture(Long userId, Long medicineId, Long planId, Long timeId) { }
++}
+diff --git a/src/test/java/com/medreminder/medicationbackend/service/CurrentProgressRegressionTest.java b/src/test/java/com/medreminder/medicationbackend/service/CurrentProgressRegressionTest.java
+index af1b759..ea620fa 100644
+--- a/src/test/java/com/medreminder/medicationbackend/service/CurrentProgressRegressionTest.java
++++ b/src/test/java/com/medreminder/medicationbackend/service/CurrentProgressRegressionTest.java
+@@ -28,38 +28,34 @@ class CurrentProgressRegressionTest {
+         when(plans.selectOne(any(Wrapper.class))).thenReturn(plan);
+         PlanService service = new PlanService(plans, mock(PlanTimeMapper.class), mock(MedicineMapper.class), tasks);
+         assertEquals("PAUSED", service.pause(1L, 2L).getStatus());
+         verify(tasks).update(isNull(), argThat((Wrapper<RemindTask> wrapper) ->
+                 wrapper.getSqlSegment().contains("user_id") && wrapper.getSqlSegment().contains("plan_id")
+                         && wrapper.getSqlSegment().contains("status IN")));
+         assertNotNull(plan.getUpdateTime());
+     }
+ 
+     @Test
+-    void resumeHonorsNewDateRange() {
++    void resumeDoesNotReviveCancelledTasks() {
+         PlanMapper plans = mock(PlanMapper.class);
+         PlanTimeMapper times = mock(PlanTimeMapper.class);
+         RemindTaskMapper tasks = mock(RemindTaskMapper.class);
+         MedicationPlan plan = new MedicationPlan();
+         plan.setId(2L);
+         plan.setStatus("PAUSED");
+         plan.setStartDate(LocalDate.now().plusDays(1));
+         plan.setEndDate(LocalDate.now().plusDays(2));
+-        PlanTime time = new PlanTime();
+-        time.setId(3L);
+         when(plans.selectOne(any(Wrapper.class))).thenReturn(plan);
+-        when(times.selectList(any(Wrapper.class))).thenReturn(List.of(time));
+         PlanService service = new PlanService(plans, times, mock(MedicineMapper.class), tasks);
+         service.resume(1L, 2L);
+-        verify(tasks).update(isNull(), argThat((Wrapper<RemindTask> wrapper) ->
+-                wrapper.getSqlSegment().contains("scheduled_at >=")
+-                        && wrapper.getSqlSegment().contains("scheduled_at <")));
++        verifyNoInteractions(tasks);
++        assertEquals(2, plan.getPlanVersion());
+     }
+ 
+     @Test
+     void todayQueryIncludesOpenReminderFromPreviousDay() {
+         RemindTaskMapper tasks = mock(RemindTaskMapper.class);
+         ReminderService service = new ReminderService(tasks, mock(MedicationRecordMapper.class),
+                 mock(PlanMapper.class), mock(PlanTimeMapper.class), mock(MedicineMapper.class),
+                 mock(AbnormalEventMapper.class), mock(NotificationService.class));
+         service.listToday(1L);
+         verify(tasks).selectList(argThat((Wrapper<RemindTask> wrapper) ->
+@@ -69,113 +65,117 @@ class CurrentProgressRegressionTest {
+ 
+     @Test
+     void repeatedExpiryScanProducesOneEventAndOneNotification() {
+         RemindTaskMapper tasks = mock(RemindTaskMapper.class);
+         MedicationRecordMapper records = mock(MedicationRecordMapper.class);
+         AbnormalEventMapper events = mock(AbnormalEventMapper.class);
+         NotificationService notifications = mock(NotificationService.class);
+         RemindTask task = new RemindTask();
+         task.setId(2L);
+         task.setUserId(1L);
++        task.setPlanVersion(1);
+         task.setExpireAt(LocalDateTime.now().minusMinutes(1));
+         when(tasks.selectList(any(Wrapper.class))).thenReturn(List.of(task));
+         when(tasks.update(isNull(), any(Wrapper.class))).thenReturn(1, 0);
+         doAnswer(call -> { ((AbnormalEvent) call.getArgument(0)).setId(5L); return 1; })
+                 .when(events).insert(any(AbnormalEvent.class));
+-        ReminderService service = new ReminderService(tasks, records, mock(PlanMapper.class),
++        ReminderService service = new ReminderService(tasks, records, activePlanMapper(),
+                 mock(PlanTimeMapper.class), mock(MedicineMapper.class), events, notifications);
+         service.scanExpiredTasks();
+         service.scanExpiredTasks();
+         verify(events, times(1)).insert(any(AbnormalEvent.class));
+         verify(notifications, times(1)).queueAbnormalEvent(argThat((AbnormalEvent e) -> e.getId().equals(5L)));
+         verify(records, times(1)).insert(argThat((MedicationRecord r) -> "UNCONFIRMED".equals(r.getAction())));
+     }
+     @BeforeAll
+     static void initializeMapperMetadata() {
+         MybatisConfiguration configuration = new MybatisConfiguration();
+         for (Class<?> entity : List.of(RemindTask.class, MedicationPlan.class, PlanTime.class,
+-                FamilyRelation.class, MedicationRecord.class, AbnormalEvent.class)) {
++                FamilyRelation.class, MedicationRecord.class, AbnormalEvent.class, Medicine.class)) {
+             MapperBuilderAssistant assistant = new MapperBuilderAssistant(configuration, "test");
+             assistant.setCurrentNamespace(entity.getName());
+             TableInfoHelper.initTableInfo(assistant, entity);
+         }
+     }
+     @Test
+     void delayedResponseKeepsTaskOpenForLaterConfirmation() {
+         RemindTaskMapper tasks = mock(RemindTaskMapper.class);
+         MedicationRecordMapper records = mock(MedicationRecordMapper.class);
+         RemindTask task = new RemindTask();
+         task.setStatus("WAITING");
++        task.setPlanVersion(1);
+         task.setExpireAt(LocalDateTime.now().plusHours(1));
+         when(tasks.selectOne(any(Wrapper.class))).thenReturn(task);
+         when(tasks.update(isNull(), any(Wrapper.class))).thenReturn(1);
+-        ReminderService service = new ReminderService(tasks, records, mock(PlanMapper.class),
++        ReminderService service = new ReminderService(tasks, records, activePlanMapper(),
+                 mock(PlanTimeMapper.class), mock(MedicineMapper.class), mock(AbnormalEventMapper.class),
+                 mock(NotificationService.class));
+         ConfirmRequest request = new ConfirmRequest();
+         request.setAction("DELAYED");
+         request.setDelayMinutes(15);
+         assertEquals(0, service.confirm(1L, 2L, request));
+         assertEquals("TRIGGERED", task.getStatus());
+         verify(tasks).update(isNull(), argThat((Wrapper<RemindTask> wrapper) ->
+                 wrapper.getSqlSet().contains("expire_at=") && wrapper.getSqlSet().contains("last_trigger_at=")));
+     }
+ 
+     @Test
+     void takenAfterDelayUpdatesExistingRecord() {
+         RemindTaskMapper tasks = mock(RemindTaskMapper.class);
+         MedicationRecordMapper records = mock(MedicationRecordMapper.class);
+         RemindTask task = new RemindTask();
+         task.setStatus("TRIGGERED");
++        task.setPlanVersion(1);
+         task.setExpireAt(LocalDateTime.now().plusHours(1));
+         MedicationRecord record = new MedicationRecord();
+         record.setId(10L);
+         record.setAction("DELAYED");
+         when(tasks.selectOne(any(Wrapper.class))).thenReturn(task);
+         when(tasks.update(isNull(), any(Wrapper.class))).thenReturn(1);
+         when(records.selectOne(any(Wrapper.class))).thenReturn(record);
+-        ReminderService service = new ReminderService(tasks, records, mock(PlanMapper.class),
++        ReminderService service = new ReminderService(tasks, records, activePlanMapper(),
+                 mock(PlanTimeMapper.class), mock(MedicineMapper.class), mock(AbnormalEventMapper.class),
+                 mock(NotificationService.class));
+         ConfirmRequest request = new ConfirmRequest();
+         request.setAction("TAKEN");
+         assertEquals(0, service.confirm(1L, 2L, request));
+         verify(records).updateById(record);
+         verify(records, never()).insert(any(MedicationRecord.class));
+         assertEquals("TAKEN", record.getAction());
+     }
+     @Test
+     void cancelledTaskCannotBeConfirmed() {
+         RemindTaskMapper tasks = mock(RemindTaskMapper.class);
+         MedicationRecordMapper records = mock(MedicationRecordMapper.class);
+         RemindTask task = new RemindTask();
+         task.setStatus("CANCELLED");
+         task.setExpireAt(LocalDateTime.now().plusHours(1));
+         when(tasks.selectOne(any(Wrapper.class))).thenReturn(task);
+-        ReminderService service = new ReminderService(tasks, records, mock(PlanMapper.class),
++        ReminderService service = new ReminderService(tasks, records, activePlanMapper(),
+                 mock(PlanTimeMapper.class), mock(MedicineMapper.class), mock(AbnormalEventMapper.class),
+                 mock(NotificationService.class));
+         ConfirmRequest request = new ConfirmRequest();
+         request.setAction("TAKEN");
+         assertEquals(4, service.confirm(1L, 2L, request));
+         verifyNoInteractions(records);
+     }
+ 
+     @Test
+     void invalidActionMustNotBecomeTaken() {
+         RemindTaskMapper tasks = mock(RemindTaskMapper.class);
+         MedicationRecordMapper records = mock(MedicationRecordMapper.class);
+         RemindTask task = new RemindTask();
+         task.setStatus("WAITING");
++        task.setPlanVersion(1);
+         task.setExpireAt(LocalDateTime.now().plusHours(1));
+         when(tasks.selectOne(any(Wrapper.class))).thenReturn(task);
+-        ReminderService service = new ReminderService(tasks, records, mock(PlanMapper.class),
++        ReminderService service = new ReminderService(tasks, records, activePlanMapper(),
+                 mock(PlanTimeMapper.class), mock(MedicineMapper.class), mock(AbnormalEventMapper.class),
+                 mock(NotificationService.class));
+         ConfirmRequest request = new ConfirmRequest();
+         request.setAction("UNKNOWN");
+         assertThrows(IllegalArgumentException.class, () -> service.confirm(1L, 2L, request));
+         verifyNoInteractions(records);
+     }
+ 
+     @Test
+     void updatingPlanCannotUseAnotherUsersMedicine() {
+@@ -237,20 +237,28 @@ class CurrentProgressRegressionTest {
+         record.setActionTime(day.plusDays(1).atTime(0, 15));
+         when(tasks.selectList(any(Wrapper.class))).thenReturn(List.of(task, cancelled));
+         when(records.selectList(any(Wrapper.class))).thenReturn(List.of(record));
+         var stat = new StatisticsService(tasks, records).calendar(1L, day, day.plusDays(1));
+         assertEquals(1, stat.getSummary().getTotalShould());
+         assertEquals(1, stat.getDays().get(0).getTakenCount());
+         assertEquals(0, stat.getDays().get(1).getTakenCount());
+         assertEquals(100.0, stat.getSummary().getCompletionRate());
+     }
+ 
++    private PlanMapper activePlanMapper() {
++        PlanMapper plans = mock(PlanMapper.class);
++        MedicationPlan plan = new MedicationPlan();
++        plan.setId(2L); plan.setUserId(1L); plan.setStatus("ACTIVE");
++        when(plans.selectOne(any(Wrapper.class))).thenReturn(plan);
++        return plans;
++    }
++
+     private PlanRequest validPlan() {
+         PlanRequest request = new PlanRequest();
+         request.setMedicineId(3L);
+         request.setStartDate(LocalDate.now());
+         request.setRemindTimes(List.of("08:00"));
+         return request;
+     }
+ 
+     @Test
+     void delayedIsNotCompletedAndStillNeedsFinalConfirmation() {

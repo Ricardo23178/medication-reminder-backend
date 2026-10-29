@@ -27,6 +27,17 @@ public class RemindTask {
     /** 生成时的计划版本；迁移前无法追溯的历史任务为 null。 */
     private Integer planVersion;
 
+    /** 生成时的药品资料；null 表示旧历史未留存快照，不能借用当前计划补写。 */
+    private Long snapshotMedicineId;
+    private String snapshotMedicineName;
+    private java.math.BigDecimal snapshotDosagePerTime;
+    private String snapshotDosageUnit;
+    private Integer snapshotMealRelation;
+
+    public String historicalMedicineName() {
+        return snapshotMedicineId == null ? "历史药品信息未留存" : snapshotMedicineName;
+    }
+
     /** 来源时间点规则 */
     private Long planTimeId;
 

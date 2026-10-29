@@ -101,10 +101,11 @@ public class PlanService {
         if (medicine == null) {
             throw new IllegalArgumentException("药品不存在或无权使用");
         }
-        cancelPendingTasks(userId, id);
+        LocalDateTime effectiveAt = LocalDateTime.now();
+        retireFutureTasks(userId, plan, effectiveAt);
         applyRequest(plan, req);
         plan.setPlanVersion(plan.getPlanVersion() + 1);
-        plan.setUpdateTime(LocalDateTime.now());
+        plan.setUpdateTime(effectiveAt);
         planMapper.updateById(plan);
 
         // 时间点：先删旧再插新（简单可靠，避免比对差异）
@@ -123,11 +124,12 @@ public class PlanService {
         if (plan == null || !"ACTIVE".equals(plan.getStatus())) {
             return null;
         }
+        LocalDateTime effectiveAt = LocalDateTime.now();
+        retireFutureTasks(userId, plan, effectiveAt);
         plan.setStatus("PAUSED");
         plan.setPlanVersion(plan.getPlanVersion() + 1);
-        plan.setUpdateTime(LocalDateTime.now());
+        plan.setUpdateTime(effectiveAt);
         planMapper.updateById(plan);
-        cancelPendingTasks(userId, id);
         return toVO(plan);
     }
 
@@ -172,6 +174,16 @@ public class PlanService {
         taskMapper.update(null, new LambdaUpdateWrapper<RemindTask>()
                 .eq(RemindTask::getUserId, userId).eq(RemindTask::getPlanId, planId)
                 .in(RemindTask::getStatus, "WAITING", "TRIGGERED")
+                .set(RemindTask::getStatus, "CANCELLED"));
+    }
+
+    private void retireFutureTasks(Long userId, MedicationPlan plan, LocalDateTime effectiveAt) {
+        if ("ACTIVE".equals(plan.getStatus())) {
+            taskMapper.triggerDueTasks(userId, plan.getId(), plan.getPlanVersion(), effectiveAt);
+        }
+        taskMapper.update(null, new LambdaUpdateWrapper<RemindTask>()
+                .eq(RemindTask::getUserId, userId).eq(RemindTask::getPlanId, plan.getId())
+                .eq(RemindTask::getStatus, "WAITING").gt(RemindTask::getScheduledAt, effectiveAt)
                 .set(RemindTask::getStatus, "CANCELLED"));
     }
 

@@ -6,15 +6,11 @@ import com.medreminder.medicationbackend.dto.AcceptInviteRequest;
 import com.medreminder.medicationbackend.dto.InviteRequest;
 import com.medreminder.medicationbackend.entity.AbnormalEvent;
 import com.medreminder.medicationbackend.entity.FamilyRelation;
-import com.medreminder.medicationbackend.entity.MedicationPlan;
-import com.medreminder.medicationbackend.entity.Medicine;
 import com.medreminder.medicationbackend.entity.RemindTask;
 import com.medreminder.medicationbackend.entity.User;
 import com.medreminder.medicationbackend.mapper.AbnormalEventMapper;
 import com.medreminder.medicationbackend.mapper.FamilyRelationMapper;
-import com.medreminder.medicationbackend.mapper.MedicineMapper;
 import com.medreminder.medicationbackend.mapper.NotificationMapper;
-import com.medreminder.medicationbackend.mapper.PlanMapper;
 import com.medreminder.medicationbackend.mapper.RemindTaskMapper;
 import com.medreminder.medicationbackend.mapper.UserMapper;
 import com.medreminder.medicationbackend.vo.AbnormalEventVO;
@@ -58,23 +54,17 @@ public class FamilyService {
     private final UserMapper userMapper;
     private final AbnormalEventMapper eventMapper;
     private final RemindTaskMapper taskMapper;
-    private final PlanMapper planMapper;
-    private final MedicineMapper medicineMapper;
     private final NotificationMapper notificationMapper;
 
     public FamilyService(FamilyRelationMapper relationMapper,
                          UserMapper userMapper,
                          AbnormalEventMapper eventMapper,
                          RemindTaskMapper taskMapper,
-                         PlanMapper planMapper,
-                         MedicineMapper medicineMapper,
                          NotificationMapper notificationMapper) {
         this.relationMapper = relationMapper;
         this.userMapper = userMapper;
         this.eventMapper = eventMapper;
         this.taskMapper = taskMapper;
-        this.planMapper = planMapper;
-        this.medicineMapper = medicineMapper;
         this.notificationMapper = notificationMapper;
     }
 
@@ -375,15 +365,11 @@ public class FamilyService {
         User user = userMapper.selectById(e.getUserId());
         vo.setUserNickname(user == null ? null : user.getNickname());
 
-        // 任务 → 计划 → 药品，补药品名和计划触发时间
+        // 使用任务快照，避免计划改版后异常历史显示成新药品。
         RemindTask task = taskMapper.selectById(e.getTaskId());
         if (task != null) {
             vo.setScheduledAt(task.getScheduledAt());
-            MedicationPlan plan = planMapper.selectById(task.getPlanId());
-            if (plan != null) {
-                Medicine medicine = medicineMapper.selectById(plan.getMedicineId());
-                vo.setMedicineName(medicine == null ? null : medicine.getName());
-            }
+            vo.setMedicineName(task.historicalMedicineName());
         }
         return vo;
     }

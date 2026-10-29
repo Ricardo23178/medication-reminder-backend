@@ -1,0 +1,14 @@
+{
+  "verdicts": [
+    {
+      "#": 1,
+      "validated": false,
+      "reason": "Current confirm reads existing records through getRecordByTaskForUpdate after acquiring plan and task locks, whose FOR UPDATE bypasses the earlier snapshot, and an inspected regression covers a separately committed DELAYED record followed by TAKEN."
+    },
+    {
+      "#": 2,
+      "validated": false,
+      "reason": "Current ensureTodayTasksForPlan reads enabled plan_time rows with FOR UPDATE after locking the plan, preventing old snapshot rules from receiving the current version, and an inspected regression covers rules replaced after snapshot creation."
+    }
+  ]
+}

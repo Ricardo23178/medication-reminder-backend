@@ -1,0 +1,12 @@
+{
+  "reviewer": "testing",
+  "findings": [],
+  "residual_risks": [
+    "Review was source-only: no tests, builds, servers, database changes or mutation testing were run. Caller supplied 55 passing tests including 6 feature tests; the current file now contains a seventh feature test added during review, whose execution is not established by that earlier evidence."
+  ],
+  "testing_gaps": [
+    "Migration coverage: the feature suite starts on a prepared database and inserts already-versioned fixtures. It does not execute plan-version.sql against legacy ACTIVE/PAUSED plans with WAITING/TRIGGERED/CONFIRMED/EXPIRED tasks, assert correct baseline assignment and cancellation, then prove the replacement unique key permits a new version at the same scheduled time while rejecting duplicates within a version. The new legacy completed-task test covers runtime generation only, not the SQL backfill.",
+    "Transactional interleavings: all feature cases use one enclosing @Transactional test and sequential calls. Add a bounded two-connection MySQL regression for update/pause racing confirmation or generation, asserting the old version cannot commit a confirmation after cancellation and generated tasks belong to the committed version. Existing sequential assertions do not verify the newly introduced plan-before-task lock discipline.",
+    "Changed reminder rules: editInvalidatesOldTasksAndPreservesCompletedVersionAndTime explicitly sets remindTimes=null. Add an edit with replacement remindTimes and assert old rule tasks remain cancelled, completed history retains its identifiers/time/version, new future tasks use the replacement schedule and incremented version, and a repeated generation does not duplicate them. This exercises the rule-replacement path together with the changed unique key."
+  ]
+}
