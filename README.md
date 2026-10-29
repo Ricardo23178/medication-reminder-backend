@@ -73,27 +73,38 @@ src/main/java/com/medreminder/medicationbackend/
 
 ### 1. 建库建表
 
-```sql
-CREATE DATABASE medication_system DEFAULT CHARACTER SET utf8mb4;
+完整建表脚本已随仓库提供：[`src/main/resources/db/init.sql`](src/main/resources/db/init.sql)，共 12 张表（10 张业务表 + `admin_setting` + `admin_audit_log`）和 5 条管理端默认配置。
+
+```bash
+# 注意必须带 --default-character-set=utf8mb4
+mysql --default-character-set=utf8mb4 -uroot -p < src/main/resources/db/init.sql
 ```
 
-当前交付目录未附建表脚本，原先说明中的 `project/db/schema.sql` 路径不存在。已有数据库可继续使用；新环境需要先取得并核对原始建表脚本，尤其是提醒任务、服药记录、异常事件的唯一键。仅建空数据库不能直接运行业务。
+**字符集必须显式指定。** Windows 下 `mysql.exe` 默认按系统代码页（简体中文环境为 GBK）解码脚本，中文会变乱码，`admin_setting` 里的中文 JSON 通知模板随即解析失败（启动后台接口报「配置内容必须是合法JSON」）。用 Navicat / Workbench 导入时同样要确认连接字符集为 `utf8mb4`。
+
+脚本可重复执行（`CREATE DATABASE IF NOT EXISTS` + `CREATE TABLE IF NOT EXISTS` + `INSERT IGNORE`），但**不会**修正已存在的旧表结构 —— 旧库升级仍需按下面的迁移顺序执行增量脚本。
+
+该脚本已是最终结构，等于依次执行完 `schema.sql` → `plan-version.sql` → `admin-console.sql` → `task-history-snapshot.sql` 的结果，新环境**不需要**再单独跑那三份迁移。
 
 已有数据库升级到计划版本功能时，先停止后端及定时任务、备份数据库，再在目标库执行一次 [`src/main/resources/db/plan-version.sql`](src/main/resources/db/plan-version.sql)，核对成功后启动新代码。该文件是增量迁移，不能替代完整建表脚本，也不能重复执行。迁移只为当前有效的未完成任务建立基线版本，无法追溯的旧历史版本保留为 `NULL`。
 
-新计划从版本 1 开始，修改、暂停、恢复时递增。旧版待处理任务取消后不再恢复，新任务只按当前版本和未来时间生成；确认和超时扫描重新核对计划状态与版本。已完成任务保留原版本和原定时点；版本号不代表已保存完整的历史药品或剂量快照。
+新计划从版本 1 开始，修改、暂停、恢复时递增。修改和暂停先在计划行锁内登记已到时点任务的服务端触发，只取消尚未触发的未来任务；已触发任务继续按自身截止时点正常确认或超时，已超时及已完成历史保留原版本和原定时点。服务端触发不代表系统通知已经送达终端。删除计划仍取消其待处理任务。
 
-### 2. 修改数据库配置
+2026-10-22 新增任务生成时的药名、剂量、单位和餐时快照，提醒、个人记录与家属异常查询均读取该快照。已有数据库需在停止后端并备份后执行一次 [`src/main/resources/db/task-history-snapshot.sql`](src/main/resources/db/task-history-snapshot.sql)，前提是已完成计划版本迁移。不能重复执行。迁移只为已知且与当前计划版本一致的任务建立升级时基线；未知或旧版本的历史不推测回填，显示“历史药品信息未留存”，原记录不删除。
 
-`src/main/resources/application.yml`：
 
-```yaml
-spring:
-  datasource:
-    url: jdbc:mysql://localhost:3306/medication_system?useUnicode=true&characterEncoding=utf8&serverTimezone=Asia/Shanghai&useSSL=false&allowPublicKeyRetrieval=true
-    username: root
-    password: root123456
+本阶段没有实现迟到补确认与追加更正；当前确认窗口仍为120分钟，稍后次数尚未限制。导师新要求的30分钟可配置窗口、最多一次稍后及迟到结果保留将作为下一阶段统一实现。
+
+### 2. 配置数据库口令
+
+口令**不再写进仓库**。复制模板文件并填写：
+
+```bash
+cp application-local.yml.example application-local.yml
+# 编辑 application-local.yml，把 spring.datasource.password 改成你的 MySQL 口令
 ```
+
+`application-local.yml` 已被 `.gitignore` 忽略，由 `application.yml` 中的 `spring.config.import: optional:file:./application-local.yml` 自动加载，不需要切换 profile。部署环境改用环境变量：`DB_URL` / `DB_USERNAME` / `DB_PASSWORD`，令牌密钥用 `JWT_SECRET`。
 
 ### 3. 启动
 
@@ -119,5 +130,27 @@ spring:
 - 默认关闭 SQL 明细日志；调试时可设置 `MYBATIS_LOG_IMPL=org.apache.ibatis.logging.stdout.StdOutImpl`。
 
 执行 `./mvnw test` 运行回归测试和 Spring MVC/JWT 鉴权测试。测试通过属性关闭调度与管理员初始化，不修改现有数据库数据。数据库并发和客户端真机流程仍需联调验证。
+
+### 关于集成测试（重要）
+
+三个集成测试类挂在 `@EnabledIfEnvironmentVariable(named="RUN_MYSQL_INTEGRATION_TESTS")` 上，共 69 项：
+
+| 测试类 | 数量 | 不设环境变量时 |
+|--------|------|----------------|
+| `AdminApiIntegrationTest` | 12 | 跳过 |
+| `CollaborationApiIntegrationTest` | 14 | 跳过 |
+| `PlanVersionIntegrationTest` | 20 | 跳过 |
+| `MedicationBackendApplicationTests` | 4 | 照常执行 |
+| `CurrentProgressRegressionTest` | 13 | 照常执行 |
+| `NotificationDispatcherTest` | 6 | 照常执行 |
+
+也就是说默认的 `./mvnw test` 只跑 23 项，**输出仍然是 BUILD SUCCESS**，很容易误判成全部通过。要跑真实数据库测试：
+
+```bash
+RUN_MYSQL_INTEGRATION_TESTS=true ./mvnw test
+```
+
+此时 69 项都会执行，需要能连上 `medication_system` 库。另外 `PlanVersionIntegrationTest` 里有 4 个用例带库名护栏，要求库名以 `medication_version_test_` 开头（防止误改真实库），指向普通库名时会直接失败 —— 这是保护，不是缺陷。建议单独建一个该前缀的空库跑这 4 项。
+
 
 上一阶段通知仅创建待发送记录。2026-10-15 已补齐站内消息中心、有限失败重试和家属知晓/关闭流程，详见[家属协同与消息中心](docs/family-collaboration-and-inbox.md)。`SENT` 仅表示消息已发布至站内消息中心，手机系统推送和后台管理仍未接入。

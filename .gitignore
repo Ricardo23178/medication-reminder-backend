@@ -37,3 +37,6 @@ admin-web/node_modules/
 admin-web/dist/
 admin-web/test-results/
 admin-web/playwright-report/
+
+# 本机私密配置（数据库口令等），只提交 .example 模板
+application-local.yml
